@@ -27,23 +27,28 @@ http://127.0.0.1:8080
 `127.0.0.1` es el valor por defecto y es la opcion recomendada cuando solo se
 necesita acceso local.
 
-Si `DASHBOARD_AUTH_ENABLED=true`, el navegador solicitara usuario y contrasena
-antes de abrir el panel.
+Si `DASHBOARD_AUTH_ENABLED=true`, abrir `/login` para iniciar sesion antes de
+usar el panel.
 
 ## 2. Acceso desde otro equipo de la misma red
 
 Para permitir acceso desde otro equipo de la red local:
 
 ```bash
-gleipnir dashboard --host 0.0.0.0 --port 8080
+gleipnir dashboard --host 0.0.0.0 --port 8080 --allow-lan
 ```
 
 Usar `0.0.0.0` expone el dashboard en las interfaces de red del servidor. Debe
 usarse solo en redes locales controladas, laboratorios o infraestructura
-institucional autorizada.
+institucional autorizada. La CLI rechaza `--host 0.0.0.0` si no se incluye
+`--allow-lan`.
 
 Cuando se use `--host 0.0.0.0`, se recomienda mantener la autenticacion activa
 en `.env`.
+
+Si `DASHBOARD_AUTH_ENABLED=false`, `--host 0.0.0.0` queda bloqueado aun con
+`--allow-lan`. La opcion `--allow-unauthenticated-lan` existe solo para demos
+controladas y no se recomienda.
 
 ## 3. Obtener la IP del servidor en Ubuntu
 
@@ -89,15 +94,24 @@ Con autenticacion activa, todas estas rutas solicitan credenciales. La ruta
 
 ## 6. Autenticacion del dashboard
 
-El dashboard usa autenticacion HTTP Basic configurable por `.env`. No hay
-credenciales hardcodeadas en el codigo.
+El dashboard usa autenticacion local configurable por `.env`. No hay
+credenciales hardcodeadas en el codigo. Con autenticacion activa, el navegador
+puede entrar por `/login` y cerrar sesion con `/logout`. La sesion Flask expira
+automaticamente, usa cookies `HttpOnly`, `SameSite=Lax` y puede marcar cookies
+`Secure` cuando el despliegue este detras de HTTPS.
 
 Activar autenticacion:
 
 ```env
 DASHBOARD_AUTH_ENABLED=true
-DASHBOARD_USERNAME=admin-local
-DASHBOARD_PASSWORD=cambiar-esta-contrasena
+DASHBOARD_USERNAME=viewer-local
+DASHBOARD_PASSWORD=<CONTRASENA_VIEWER>
+DASHBOARD_ROLE=viewer
+DASHBOARD_ADMIN_USERNAME=admin-local
+DASHBOARD_ADMIN_PASSWORD=<CONTRASENA_ADMIN>
+DASHBOARD_SECRET_KEY=<CLAVE_LARGA_ALEATORIA>
+DASHBOARD_SESSION_COOKIE_SECURE=false
+DASHBOARD_SESSION_TIMEOUT_MINUTES=30
 ```
 
 Desactivar autenticacion:
@@ -106,19 +120,51 @@ Desactivar autenticacion:
 DASHBOARD_AUTH_ENABLED=false
 DASHBOARD_USERNAME=
 DASHBOARD_PASSWORD=
+DASHBOARD_ROLE=viewer
+DASHBOARD_ADMIN_USERNAME=
+DASHBOARD_ADMIN_PASSWORD=
+DASHBOARD_SECRET_KEY=
+DASHBOARD_SESSION_COOKIE_SECURE=false
+DASHBOARD_SESSION_TIMEOUT_MINUTES=30
 ```
 
-Con la autenticacion activa, el navegador muestra el prompt estandar de usuario
-y contrasena. La contrasena no se muestra en la interfaz ni se registra en logs.
-Ademas, se habilita `/admin/lists` para administracion manual de listas.
+Con la autenticacion activa, la contrasena no se muestra en la interfaz ni se
+registra en logs. Las credenciales se comparan con una comparacion segura de
+tiempo constante. Ademas, se habilita `/admin/lists` para administracion manual
+de listas. Si `DASHBOARD_AUTH_ENABLED=true`, `DASHBOARD_SECRET_KEY` tambien es
+obligatorio para firmar la sesion Flask y proteger formularios administrativos
+contra CSRF.
+
+`DASHBOARD_SESSION_TIMEOUT_MINUTES` define los minutos de vida de la sesion web.
+`DASHBOARD_SESSION_COOKIE_SECURE=false` permite uso local por HTTP; cambiarlo a
+`true` cuando se use HTTPS mediante reverse proxy.
+
+Roles disponibles:
+
+- `viewer`: puede abrir el dashboard, ver eventos, usar filtros y ver graficas.
+  No puede administrar whitelist ni blacklist.
+- `admin`: puede hacer lo anterior y tambien administrar whitelist y blacklist
+  en `/admin/lists`.
+
+Si solo se usa `DASHBOARD_USERNAME` y `DASHBOARD_PASSWORD`, su permiso se define
+con `DASHBOARD_ROLE`. Si se configuran `DASHBOARD_ADMIN_USERNAME` y
+`DASHBOARD_ADMIN_PASSWORD`, esas credenciales siempre tienen rol `admin`.
 
 Limitaciones:
 
-- HTTP Basic Auth no cifra credenciales por si solo.
+- El dashboard mantiene compatibilidad con HTTP Basic Auth para accesos locales
+  o pruebas, pero Basic Auth no cifra credenciales por si solo.
 - No exponer el dashboard a internet.
 - Usar solo en red local, laboratorio o infraestructura institucional
   autorizada.
-- Para produccion real se requeriria HTTPS y autenticacion mas robusta.
+- Si se expone fuera del equipo, usar HTTPS con reverse proxy.
+- Para produccion real se requeriria autenticacion mas robusta.
+
+Para un despliegue con HTTPS, consultar
+`docs/dashboard_https_reverse_proxy.md`. La recomendacion es mantener Gleipnir
+escuchando en `127.0.0.1` y exponer solo Nginx o Caddy como reverse proxy TLS.
+
+Resumen completo de seguridad y checklist: `docs/security.md`.
 
 ## 7. Administracion opcional de listas
 
@@ -148,14 +194,18 @@ BLACKLIST_FILE=data/blacklist.txt
 Seguridad de la seccion administrativa:
 
 - Solo funciona con `DASHBOARD_AUTH_ENABLED=true`.
-- Requiere usuario y contrasena por HTTP Basic Auth.
+- Requiere sesion autenticada con rol `admin`.
+- Un usuario `viewer` recibe una pagina 403 de acceso denegado.
 - Valida formato de IP y MAC usando la misma logica de los modulos
   `whitelist.py` y `blacklist.py`.
 - Evita duplicados.
 - No ejecuta comandos del sistema.
 - No permite modificar eventos, reportes ni configuracion del IDS.
+- Rechaza POST administrativos sin token CSRF valido.
 - Registra acciones administrativas en logs y, si SQLite esta disponible, como
   eventos `ADMIN_LIST_ACTION`.
+- Registra auditoria especifica de acciones administrativas en SQLite, sin
+  contrasenas, tokens CSRF ni secretos.
 
 Las vistas de eventos (`/`, `/events` y `/events/<event_id>`) permanecen de solo
 lectura.
@@ -266,15 +316,104 @@ con los criterios seleccionados.
 ## 12. Consideraciones de seguridad
 
 - Las vistas de eventos del dashboard son de solo lectura.
-- Implementa autenticacion HTTP Basic opcional.
+- Implementa autenticacion local opcional con sesion y compatibilidad Basic Auth.
 - Permite editar whitelist y blacklist solo en `/admin/lists` con autenticacion
   activa.
 - No exponer a internet.
 - Usar preferentemente red local o laboratorio.
 - No publicar credenciales.
 - No muestra secretos del `.env`.
-- Activar `DASHBOARD_AUTH_ENABLED=true` al usar `--host 0.0.0.0`.
+- Activar `DASHBOARD_AUTH_ENABLED=true` al usar `--host 0.0.0.0 --allow-lan`.
 - Mantener `.env`, SQLite, logs y reportes con permisos restringidos.
 
-Para exponerlo en red local, hacerlo explicitamente con `--host 0.0.0.0` y
+Para exponerlo en red local, hacerlo explicitamente con `--host 0.0.0.0 --allow-lan` y
 validar firewall, segmento de red y autorizacion institucional.
+
+## 13. Cabeceras HTTP de seguridad
+
+El dashboard agrega cabeceras HTTP defensivas en todas sus respuestas:
+
+- `X-Content-Type-Options: nosniff`.
+- `X-Frame-Options: DENY`.
+- `Referrer-Policy: no-referrer`.
+- `Content-Security-Policy` basica.
+
+La CSP aplicada es:
+
+```text
+default-src 'self';
+script-src 'self';
+style-src 'self' 'unsafe-inline';
+img-src 'self' data:;
+connect-src 'self';
+base-uri 'self';
+form-action 'self';
+frame-ancestors 'none'
+```
+
+`style-src 'unsafe-inline'` se conserva porque el dashboard usa estilos CSS
+inline en sus plantillas HTML. El dashboard no depende obligatoriamente de
+internet ni de CDN externos para graficas o estilos.
+
+Cuando la autenticacion esta activa, o cuando se accede a rutas administrativas,
+tambien se agrega:
+
+```text
+Cache-Control: no-store
+Pragma: no-cache
+Expires: 0
+```
+
+Esto reduce el riesgo de que eventos, sesiones o pantallas administrativas
+queden almacenadas en cache del navegador o de intermediarios.
+
+## 14. Auditoria administrativa
+
+Cuando la administracion web esta habilitada y un usuario autenticado realiza
+acciones relevantes, el dashboard registra eventos de auditoria. Si SQLite esta
+configurado, los eventos se guardan en la tabla de eventos; si el guardado no
+esta disponible, se registra por `logger.py`.
+
+Eventos registrados:
+
+- `ADMIN_WHITELIST_ADD`.
+- `ADMIN_WHITELIST_REMOVE`.
+- `ADMIN_BLACKLIST_ADD`.
+- `ADMIN_BLACKLIST_REMOVE`.
+- `ADMIN_LOGIN_SUCCESS`.
+- `ADMIN_LOGIN_FAILED`.
+- `ADMIN_LOGOUT`.
+
+Cada evento incluye:
+
+- `timestamp`.
+- Usuario.
+- Accion.
+- IP remota si esta disponible.
+- Resultado.
+- Mensaje.
+
+No se guardan contrasenas, tokens CSRF, API keys ni secretos del `.env`. Los
+eventos de cambios en listas tambien conservan compatibilidad con el evento
+historico `ADMIN_LIST_ACTION` para reportes previos.
+
+## 15. Checklist de despliegue seguro
+
+- `.env` local y no versionado.
+- `DASHBOARD_SECRET_KEY` definido antes de activar autenticacion.
+- `DASHBOARD_AUTH_ENABLED=true` al usar `0.0.0.0 --allow-lan`.
+- No usar `--allow-unauthenticated-lan` salvo demo controlada.
+- HTTPS mediante Nginx/Caddy si se usa fuera de localhost.
+- `DASHBOARD_SESSION_COOKIE_SECURE=true` cuando se accede por HTTPS.
+- Firewall o segmentacion para limitar acceso.
+- Revisar eventos `ADMIN_*`, logs, SQLite y reportes.
+- No publicar credenciales, tokens, screenshots de `.env` ni reportes con datos
+  sensibles.
+
+Riesgos mitigados:
+
+- Exposicion accidental en interfaces publicas.
+- Cambios administrativos no autorizados por CSRF.
+- Reutilizacion de sesiones antiguas mediante timeout.
+- Cache local de paginas autenticadas o administrativas.
+- Ausencia de trazabilidad en cambios de listas y sesiones admin.

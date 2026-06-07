@@ -25,6 +25,12 @@ from src.sniffer import parse_pcap, start_live_capture, start_live_capture_forev
 from src.status import print_health_report, run_healthcheck
 
 
+LAN_DASHBOARD_WARNING = (
+    "ADVERTENCIA: el dashboard está escuchando en todas las interfaces. "
+    "Úsalo solo en red local/laboratorio y no lo expongas a internet."
+)
+
+
 def main(
     argv: Sequence[str] | None = None,
     *,
@@ -171,6 +177,18 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=8080,
         help="HTTP port for the dashboard.",
+    )
+    dashboard.add_argument(
+        "--allow-lan",
+        action="store_true",
+        help="Explicitly allow binding the dashboard to 0.0.0.0 on a trusted LAN.",
+    )
+    dashboard.add_argument(
+        "--allow-unauthenticated-lan",
+        action="store_true",
+        help=(
+            "Allow 0.0.0.0 with DASHBOARD_AUTH_ENABLED=false. Not recommended."
+        ),
     )
     dashboard.set_defaults(handler=_handle_dashboard)
 
@@ -398,18 +416,63 @@ def _handle_dashboard(
     config = _load_config()
     port = _validate_dashboard_port(args.port)
     host = str(args.host).strip() or "127.0.0.1"
+    _validate_dashboard_exposure(args, host, config)
     app = create_dashboard_app(config=config)
 
     print(f"Starting Gleipnir dashboard at http://{host}:{port}", file=stdout)
     if host == "0.0.0.0":
-        print(
-            "WARNING: 0.0.0.0 exposes the dashboard on the local network. "
-            "Use only in controlled environments.",
-            file=stdout,
-        )
-    print("Dashboard is read-only. No browser will be opened automatically.", file=stdout)
+        print(LAN_DASHBOARD_WARNING, file=stdout)
+        _log_dashboard_exposure_warning(config)
+    print(
+        "Dashboard event views are read-only. No browser will be opened automatically.",
+        file=stdout,
+    )
     app.run(host=host, port=port)
     return 0
+
+
+def _validate_dashboard_exposure(
+    args: argparse.Namespace,
+    host: str,
+    config: Any,
+) -> None:
+    if host != "0.0.0.0":
+        return
+
+    if not bool(getattr(args, "allow_lan", False)):
+        raise ValueError(
+            "Binding the dashboard to 0.0.0.0 requires --allow-lan. "
+            "Use it only in a trusted local network/laboratory and never expose "
+            "the dashboard to internet."
+        )
+
+    if _dashboard_auth_enabled(config):
+        return
+
+    if not bool(getattr(args, "allow_unauthenticated_lan", False)):
+        raise ValueError(
+            "DASHBOARD_AUTH_ENABLED=false with --host 0.0.0.0 is blocked. "
+            "Enable dashboard authentication or add --allow-unauthenticated-lan "
+            "only for a controlled local/laboratory network."
+        )
+
+
+def _dashboard_auth_enabled(config: Any) -> bool:
+    value = getattr(config, "dashboard_auth_enabled", False)
+    if isinstance(value, bool):
+        return value
+
+    return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _log_dashboard_exposure_warning(config: Any) -> None:
+    try:
+        from src.logger import get_logger, setup_logging
+
+        setup_logging(config)
+        get_logger("dashboard").warning(LAN_DASHBOARD_WARNING)
+    except Exception:
+        return
 
 
 def _handle_whitelist_list(

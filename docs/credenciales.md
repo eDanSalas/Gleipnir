@@ -26,6 +26,9 @@ Variables sensibles:
 - `SMTP_PASSWORD`
 - `ABUSEIPDB_API_KEY`
 - `VIRUSTOTAL_API_KEY`
+- `DASHBOARD_PASSWORD`
+- `DASHBOARD_ADMIN_PASSWORD`
+- `DASHBOARD_SECRET_KEY`
 
 Variables operativas no secretas:
 
@@ -48,6 +51,41 @@ Variables operativas no secretas:
 - `EVENT_RETENTION_DAYS`
 - `MAX_LOG_SIZE_MB`
 - `MAX_REPORTS_TO_KEEP`
+- `DASHBOARD_AUTH_ENABLED`
+- `DASHBOARD_USERNAME`
+- `DASHBOARD_ROLE`
+- `DASHBOARD_ADMIN_USERNAME`
+- `DASHBOARD_SESSION_COOKIE_SECURE`
+- `DASHBOARD_SESSION_TIMEOUT_MINUTES`
+
+## Credenciales del dashboard
+
+El dashboard usa variables de `.env` para autenticacion:
+
+```env
+DASHBOARD_AUTH_ENABLED=true
+DASHBOARD_USERNAME=viewer-local
+DASHBOARD_PASSWORD=<CONTRASENA_VIEWER>
+DASHBOARD_ROLE=viewer
+DASHBOARD_ADMIN_USERNAME=admin-local
+DASHBOARD_ADMIN_PASSWORD=<CONTRASENA_ADMIN>
+DASHBOARD_SECRET_KEY=<CLAVE_LARGA_ALEATORIA>
+DASHBOARD_SESSION_COOKIE_SECURE=false
+DASHBOARD_SESSION_TIMEOUT_MINUTES=30
+```
+
+`DASHBOARD_SECRET_KEY` firma la sesion Flask y los tokens CSRF. Debe ser largo,
+aleatorio y distinto por entorno. No debe guardarse en Git ni compartirse en
+capturas de pantalla.
+
+Roles:
+
+- `viewer`: visualizacion de dashboard y eventos.
+- `admin`: visualizacion y administracion de whitelist/blacklist.
+
+Si el dashboard se publica en red local con `0.0.0.0 --allow-lan`, mantener
+`DASHBOARD_AUTH_ENABLED=true`. Si se usa HTTPS mediante reverse proxy, cambiar
+`DASHBOARD_SESSION_COOKIE_SECURE=true`.
 
 ## Redaccion en el codigo
 
@@ -67,6 +105,11 @@ Variables operativas no secretas:
 
 `src/storage.py` sanitiza `raw_json` antes de guardarlo en SQLite para evitar
 persistir contrasenas, API keys, tokens o secretos.
+
+La auditoria administrativa del dashboard guarda eventos `ADMIN_*` con usuario,
+accion, IP remota, resultado y mensaje. No debe incluir contrasenas, tokens CSRF
+ni secretos. Si SQLite no esta disponible, la auditoria cae al logger con la
+misma regla de no registrar secretos.
 
 `src/status.py` no envia correos reales. La verificacion SMTP usa una prueba de
 disponibilidad y no imprime `SMTP_PASSWORD` ni API keys.
@@ -119,6 +162,7 @@ contiene eventos acumulados del IDS:
 - IPs externas en blacklist.
 - Resultados de threat intelligence.
 - Alertas enviadas o suprimidas.
+- Auditoria administrativa del dashboard.
 
 No debe contener secretos, pero si puede contener datos operativos que permitan
 identificar equipos o usuarios. Debe protegerse con permisos de sistema y no
@@ -163,3 +207,13 @@ internas de acceso.
 `ALERT_COOLDOWN_SECONDS` y `ALERT_MAX_PER_MINUTE` no son secretos. Controlan el
 volumen de correos para evitar alertas repetidas. Las decisiones se registran
 como `ALERT_SENT` o `ALERT_SUPPRESSED` y no deben incluir credenciales.
+
+## Checklist de credenciales
+
+- `.env` no versionado.
+- `.env` con permisos `600`.
+- `DASHBOARD_SECRET_KEY` definido si `DASHBOARD_AUTH_ENABLED=true`.
+- Passwords reales solo en el equipo de despliegue.
+- No publicar logs, reportes, SQLite ni capturas de pantalla con datos
+  sensibles.
+- Rotar passwords/API keys al terminar la demo si se usaron valores reales.

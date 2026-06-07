@@ -57,6 +57,12 @@ class Config:
     dashboard_auth_enabled: bool = False
     dashboard_username: str | None = None
     dashboard_password: str | None = field(default=None, repr=False)
+    dashboard_role: str = "viewer"
+    dashboard_admin_username: str | None = None
+    dashboard_admin_password: str | None = field(default=None, repr=False)
+    dashboard_secret_key: str | None = field(default=None, repr=False)
+    dashboard_session_cookie_secure: bool = False
+    dashboard_session_timeout_minutes: int = 30
 
     def as_redacted_dict(self) -> dict[str, str | int | float | None]:
         """Return a safe representation for diagnostics without secrets."""
@@ -86,6 +92,16 @@ class Config:
             "dashboard_auth_enabled": self.dashboard_auth_enabled,
             "dashboard_username": self.dashboard_username,
             "dashboard_password": "***" if self.dashboard_password else None,
+            "dashboard_role": self.dashboard_role,
+            "dashboard_admin_username": self.dashboard_admin_username,
+            "dashboard_admin_password": (
+                "***" if self.dashboard_admin_password else None
+            ),
+            "dashboard_secret_key": "***" if self.dashboard_secret_key else None,
+            "dashboard_session_cookie_secure": self.dashboard_session_cookie_secure,
+            "dashboard_session_timeout_minutes": (
+                self.dashboard_session_timeout_minutes
+            ),
         }
 
 
@@ -183,6 +199,26 @@ def load_config(
         ),
         dashboard_username=_optional(values, "DASHBOARD_USERNAME"),
         dashboard_password=_optional(values, "DASHBOARD_PASSWORD"),
+        dashboard_role=_optional_choice(
+            values,
+            "DASHBOARD_ROLE",
+            default="viewer",
+            choices=("viewer", "admin"),
+        ),
+        dashboard_admin_username=_optional(values, "DASHBOARD_ADMIN_USERNAME"),
+        dashboard_admin_password=_optional(values, "DASHBOARD_ADMIN_PASSWORD"),
+        dashboard_secret_key=_optional(values, "DASHBOARD_SECRET_KEY"),
+        dashboard_session_cookie_secure=_optional_bool(
+            values,
+            "DASHBOARD_SESSION_COOKIE_SECURE",
+            default=False,
+        ),
+        dashboard_session_timeout_minutes=_optional_int(
+            values,
+            "DASHBOARD_SESSION_TIMEOUT_MINUTES",
+            default=30,
+            minimum=1,
+        ),
     )
 
 

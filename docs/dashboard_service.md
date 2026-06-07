@@ -71,8 +71,14 @@ LOG_DIR=logs/
 REPORT_DIR=logs/reports/
 IDS_DB_PATH=data/gleipnir_events.db
 DASHBOARD_AUTH_ENABLED=true
-DASHBOARD_USERNAME=admin-local
-DASHBOARD_PASSWORD=cambiar-esta-contrasena
+DASHBOARD_USERNAME=viewer-local
+DASHBOARD_PASSWORD=<CONTRASENA_VIEWER>
+DASHBOARD_ROLE=viewer
+DASHBOARD_ADMIN_USERNAME=admin-local
+DASHBOARD_ADMIN_PASSWORD=<CONTRASENA_ADMIN>
+DASHBOARD_SECRET_KEY=<CLAVE_LARGA_ALEATORIA>
+DASHBOARD_SESSION_COOKIE_SECURE=false
+DASHBOARD_SESSION_TIMEOUT_MINUTES=30
 ```
 
 `IDS_DB_PATH` debe apuntar a la misma base SQLite donde el IDS guarda eventos.
@@ -88,18 +94,36 @@ gleipnir status
 
 ## 5. Configurar DASHBOARD_AUTH_ENABLED
 
-Cuando el servicio use `--host 0.0.0.0`, el dashboard queda disponible desde la
-red local por IP y puerto. Mantener autenticacion activa:
+Cuando el servicio use `--host 0.0.0.0 --allow-lan`, el dashboard queda
+disponible desde la red local por IP y puerto. Mantener autenticacion activa:
 
 ```env
 DASHBOARD_AUTH_ENABLED=true
-DASHBOARD_USERNAME=admin-local
-DASHBOARD_PASSWORD=cambiar-esta-contrasena
+DASHBOARD_USERNAME=viewer-local
+DASHBOARD_PASSWORD=<CONTRASENA_VIEWER>
+DASHBOARD_ROLE=viewer
+DASHBOARD_ADMIN_USERNAME=admin-local
+DASHBOARD_ADMIN_PASSWORD=<CONTRASENA_ADMIN>
+DASHBOARD_SECRET_KEY=<CLAVE_LARGA_ALEATORIA>
+DASHBOARD_SESSION_COOKIE_SECURE=false
+DASHBOARD_SESSION_TIMEOUT_MINUTES=30
 ```
 
-No dejar `DASHBOARD_USERNAME` ni `DASHBOARD_PASSWORD` vacios si
-`DASHBOARD_AUTH_ENABLED=true`; el dashboard no debe arrancar con autenticacion
-incompleta.
+No dejar `DASHBOARD_USERNAME`, `DASHBOARD_PASSWORD` ni `DASHBOARD_SECRET_KEY`
+vacios si `DASHBOARD_AUTH_ENABLED=true`; el dashboard no debe arrancar con
+autenticacion incompleta ni sin proteccion CSRF para formularios
+administrativos. Si se usan credenciales admin separadas, configurar
+`DASHBOARD_ADMIN_USERNAME` y `DASHBOARD_ADMIN_PASSWORD` juntas.
+`DASHBOARD_SESSION_TIMEOUT_MINUTES` controla la expiracion de sesion.
+`DASHBOARD_SESSION_COOKIE_SECURE=false` permite uso HTTP local; cambiarlo a
+`true` si se usa HTTPS mediante reverse proxy.
+
+Roles:
+
+- `DASHBOARD_ROLE=viewer`: recomendado para visualizacion.
+- `DASHBOARD_ROLE=admin`: permite que el usuario principal administre listas.
+- `DASHBOARD_ADMIN_USERNAME` y `DASHBOARD_ADMIN_PASSWORD`: usuario admin
+  opcional, separado del viewer.
 
 Solo en pruebas locales controladas puede desactivarse:
 
@@ -109,7 +133,8 @@ DASHBOARD_AUTH_ENABLED=false
 
 Con autenticacion desactivada, cualquier equipo que alcance el puerto del
 servidor podria ver el dashboard. No usar esa configuracion al exponer
-`0.0.0.0`.
+`0.0.0.0`. La CLI bloquea este caso salvo que se agregue tambien
+`--allow-unauthenticated-lan`, opcion no recomendada para operacion normal.
 
 ## 6. Copiar el servicio a /etc/systemd/system/
 
@@ -124,7 +149,7 @@ Contenido principal:
 ```ini
 WorkingDirectory=/opt/gleipnir
 EnvironmentFile=/opt/gleipnir/.env
-ExecStart=/opt/gleipnir/.venv/bin/gleipnir dashboard --host 0.0.0.0 --port 8080
+ExecStart=/opt/gleipnir/.venv/bin/gleipnir dashboard --host 0.0.0.0 --port 8080 --allow-lan
 Restart=always
 RestartSec=5
 ```
@@ -184,7 +209,9 @@ Ejemplo:
 http://192.168.1.50:8080
 ```
 
-Si `DASHBOARD_AUTH_ENABLED=true`, el navegador solicitara usuario y contrasena.
+Si `DASHBOARD_AUTH_ENABLED=true`, iniciar sesion desde `/login`. El dashboard
+tambien mantiene compatibilidad con HTTP Basic Auth para accesos locales, pero
+Basic Auth no cifra credenciales por si solo.
 No publicar estas credenciales ni compartir el archivo `.env`.
 
 ## 9. Seguridad operativa
@@ -194,9 +221,19 @@ No publicar estas credenciales ni compartir el archivo `.env`.
 - Mantener `.env` con permisos restrictivos.
 - No exponer el dashboard a internet.
 - Usar firewall o segmentacion para limitar el acceso al puerto `8080`.
-- Mantener `DASHBOARD_AUTH_ENABLED=true` cuando se use `--host 0.0.0.0`.
+- Mantener `DASHBOARD_AUTH_ENABLED=true` cuando se use `--host 0.0.0.0 --allow-lan`.
+- Usar HTTPS con reverse proxy si se expone fuera del equipo o de una red local
+  confiable.
+- Revisar que `DASHBOARD_SECRET_KEY` este definido antes de iniciar el servicio.
+- Usar `DASHBOARD_SESSION_COOKIE_SECURE=true` si el acceso final es HTTPS.
+- Las rutas autenticadas/administrativas usan `Cache-Control: no-store` y
+  cabeceras como `X-Frame-Options`, `X-Content-Type-Options`,
+  `Referrer-Policy` y CSP basica.
+- Las acciones administrativas generan eventos `ADMIN_*` sin guardar
+  contrasenas, tokens CSRF ni secretos.
 - Revisar periodicamente `journalctl -u gleipnir-dashboard` sin publicar datos
   sensibles.
+- Revisar eventos de auditoria desde SQLite/reportes segun la politica interna.
 
 ## 10. Flujo 24/7
 
@@ -204,7 +241,20 @@ Con el servicio habilitado:
 
 1. Ubuntu inicia `gleipnir-dashboard.service` durante el arranque.
 2. systemd carga `/opt/gleipnir/.env`.
-3. Ejecuta `/opt/gleipnir/.venv/bin/gleipnir dashboard --host 0.0.0.0 --port 8080`.
+3. Ejecuta `/opt/gleipnir/.venv/bin/gleipnir dashboard --host 0.0.0.0 --port 8080 --allow-lan`.
 4. El dashboard lee eventos desde SQLite usando `IDS_DB_PATH`.
 5. Si el proceso falla, systemd lo reinicia por `Restart=always` despues de 5
    segundos.
+
+## 11. Checklist antes de habilitar en 24/7
+
+- `.env` existe en `/opt/gleipnir/.env` y tiene permisos restrictivos.
+- `DASHBOARD_AUTH_ENABLED=true`.
+- `DASHBOARD_SECRET_KEY` definido.
+- Usuarios `viewer` y `admin` configurados segun necesidad.
+- No hay credenciales en el archivo `.service`.
+- El servicio usa `--allow-lan` solo para red local/laboratorio.
+- Si hay acceso fuera de localhost, usar HTTPS con reverse proxy.
+- Firewall o segmentacion limita el puerto expuesto.
+- Se revisan logs y eventos `ADMIN_LOGIN_*`, `ADMIN_LOGOUT`,
+  `ADMIN_WHITELIST_*` y `ADMIN_BLACKLIST_*`.

@@ -19,6 +19,8 @@ administracion o autorizacion de la organizacion. Su alcance es defensivo:
 - Enriquecimiento de IPs externas mediante servicios de reputacion.
 - Alertas administrativas, incluidas alertas suprimidas por politica.
 - Reportes administrativos generados desde SQLite.
+- Dashboard local de visualizacion y administracion limitada de listas.
+- Auditoria administrativa de login/logout y cambios de whitelist/blacklist.
 - Healthcheck operativo sin envio de correos reales.
 - Mantenimiento de retencion para limitar crecimiento de datos.
 - Ejecucion 24/7 con systemd en infraestructura autorizada.
@@ -35,6 +37,11 @@ criterios de minimizacion, finalidad, informacion, seguridad y retencion.
 La base SQLite configurada con `IDS_DB_PATH` almacena eventos acumulados. Aunque
 no debe contener credenciales, si puede contener metadatos operativos sensibles.
 Debe limitarse su acceso y definirse un periodo de conservacion.
+
+La auditoria administrativa del dashboard puede registrar usuario, accion, IP
+remota, resultado y mensaje. Estos datos apoyan trazabilidad y control interno,
+pero tambien deben protegerse porque pueden asociarse a personas administradoras
+o a decisiones operativas.
 
 La version actual permite configurar retencion mediante `EVENT_RETENTION_DAYS`,
 `MAX_REPORTS_TO_KEEP` y `MAX_LOG_SIZE_MB`. Estas variables apoyan el principio
@@ -66,6 +73,9 @@ ambito privado. Para el IDS:
 - Evitar conservar datos mas tiempo del necesario.
 - Proteger archivos `.env`, logs, reportes y cache.
 - Proteger la base SQLite de eventos.
+- Proteger acceso al dashboard con autenticacion, roles, CSRF y HTTPS cuando
+  aplique.
+- Revisar eventos de auditoria administrativa sin publicar datos sensibles.
 - Atender derechos y procedimientos internos cuando apliquen.
 
 Fuentes oficiales:
@@ -111,6 +121,8 @@ politica interna que informe a usuarios y administradores:
 - Quien puede consultar la base SQLite y bitacoras.
 - Cuanto tiempo se conservan.
 - Que existe una politica de retencion para eventos, reportes y logs.
+- Que el dashboard administrativo registra auditoria de accesos y cambios de
+  listas.
 - Como se reportan incidentes.
 
 Fuente de referencia: Ley Federal del Trabajo, Camara de Diputados:
@@ -138,6 +150,10 @@ La organizacion deberia contar con una politica de uso aceptable que indique:
 - No se buscan contrasenas ni contenido privado.
 - Los reportes tienen acceso restringido.
 - La base SQLite, logs, cache y reportes tienen acceso restringido.
+- El dashboard no se expone a internet y usa HTTPS con reverse proxy si sale de
+  localhost o laboratorio local.
+- Los eventos de auditoria administrativa se revisan solo por personal
+  autorizado.
 - Hay periodo de retencion definido.
 - Los usuarios deben reportar equipos no registrados o incidentes.
 

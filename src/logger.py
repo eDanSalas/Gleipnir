@@ -128,6 +128,8 @@ def _redactor_from_config(config: Any) -> SecretRedactor:
             getattr(config, "abuseipdb_api_key", None),
             getattr(config, "virustotal_api_key", None),
             getattr(config, "dashboard_password", None),
+            getattr(config, "dashboard_admin_password", None),
+            getattr(config, "dashboard_secret_key", None),
         )
     )
 

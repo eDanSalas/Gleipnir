@@ -98,6 +98,16 @@ HEALTH_LOG_INTERVAL_SECONDS=300
 EVENT_RETENTION_DAYS=30
 MAX_LOG_SIZE_MB=50
 MAX_REPORTS_TO_KEEP=20
+
+DASHBOARD_AUTH_ENABLED=true
+DASHBOARD_USERNAME=viewer-local
+DASHBOARD_PASSWORD=<CONTRASENA_VIEWER>
+DASHBOARD_ROLE=viewer
+DASHBOARD_ADMIN_USERNAME=admin-local
+DASHBOARD_ADMIN_PASSWORD=<CONTRASENA_ADMIN>
+DASHBOARD_SECRET_KEY=<CLAVE_LARGA_ALEATORIA>
+DASHBOARD_SESSION_COOKIE_SECURE=false
+DASHBOARD_SESSION_TIMEOUT_MINUTES=30
 ```
 
 No subir `.env` al repositorio. La configuracion se valida con:
@@ -269,7 +279,83 @@ Despues se edita `<INTERFAZ>`, se copia el servicio a
 `/etc/systemd/system/gleipnir.service` y se gestiona con `systemctl`. No incluir
 credenciales en el archivo `.service`; deben permanecer en `.env`.
 
-## 12. Alertas SMTP
+## 12. Dashboard web seguro
+
+El dashboard permite visualizar eventos desde navegador. Para uso local:
+
+```bash
+gleipnir dashboard --host 127.0.0.1 --port 8080
+```
+
+Abrir:
+
+```text
+http://127.0.0.1:8080
+```
+
+Para red local/laboratorio con autenticacion activa:
+
+```bash
+gleipnir dashboard --host 0.0.0.0 --port 8080 --allow-lan
+```
+
+`0.0.0.0` expone el dashboard en todas las interfaces; no usarlo para internet.
+Si `DASHBOARD_AUTH_ENABLED=false`, la CLI bloquea `0.0.0.0` salvo con
+`--allow-unauthenticated-lan`, opcion no recomendada.
+
+Autenticacion:
+
+- `DASHBOARD_AUTH_ENABLED=true` activa login y sesion.
+- `viewer` puede ver dashboard, eventos, filtros y graficas.
+- `admin` puede administrar whitelist/blacklist en `/admin/lists`.
+- `DASHBOARD_SECRET_KEY` firma sesion y tokens CSRF.
+- `DASHBOARD_SESSION_TIMEOUT_MINUTES` controla expiracion de sesion.
+- `DASHBOARD_SESSION_COOKIE_SECURE=true` debe usarse cuando hay HTTPS.
+
+Proteccion CSRF:
+
+- Protege formularios administrativos de whitelist y blacklist.
+- Si el token falta o es invalido, la accion se rechaza con HTTP 400.
+- No se guardan tokens CSRF en auditoria.
+
+Cabeceras HTTP:
+
+- `X-Content-Type-Options: nosniff`.
+- `X-Frame-Options: DENY`.
+- `Referrer-Policy: no-referrer`.
+- `Cache-Control: no-store` en rutas autenticadas/administrativas.
+- CSP basica con `default-src 'self'`.
+
+Auditoria administrativa:
+
+- `ADMIN_LOGIN_SUCCESS`
+- `ADMIN_LOGIN_FAILED`
+- `ADMIN_LOGOUT`
+- `ADMIN_WHITELIST_ADD`
+- `ADMIN_WHITELIST_REMOVE`
+- `ADMIN_BLACKLIST_ADD`
+- `ADMIN_BLACKLIST_REMOVE`
+
+Los eventos guardan timestamp, usuario, accion, IP remota si existe, resultado
+y mensaje. Nunca guardan contrasenas, tokens CSRF, API keys ni secretos.
+
+HTTPS:
+
+- Basic Auth y login de formulario no cifran la conexion por si solos.
+- Para produccion real usar Nginx o Caddy como reverse proxy TLS.
+- Mantener Gleipnir escuchando en `127.0.0.1` detras del proxy.
+- Guia: `docs/dashboard_https_reverse_proxy.md`.
+
+Checklist minimo:
+
+- `.env` con permisos `600` y fuera de Git.
+- `DASHBOARD_SECRET_KEY` definido.
+- Autenticacion activa si se usa `0.0.0.0`.
+- HTTPS si se usa fuera de localhost.
+- Firewall restringido.
+- Revisar logs/auditoria.
+
+## 13. Alertas SMTP
 
 Las alertas usan `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD` y
 `ADMIN_EMAIL` desde `.env`.
@@ -285,7 +371,7 @@ Si no llegan alertas:
 - Validar que el proveedor permita SMTP desde la red institucional.
 - Ejecutar `gleipnir test-config`.
 
-## 13. Politicas de alerta
+## 14. Politicas de alerta
 
 Antes de llamar a SMTP, Gleipnir evalua una politica para evitar correos
 repetidos:
@@ -304,7 +390,7 @@ un correo, se guarda `ALERT_SUPPRESSED`; cuando se envia, se guarda
 
 La severidad `critical` no se bloquea por cooldown ni por limite por minuto.
 
-## 14. Threat Intelligence
+## 15. Threat Intelligence
 
 El modulo `src/threat_intel.py` permite consultar:
 
@@ -325,7 +411,7 @@ LOG_DIR/threat_intel_cache.json
 Las consultas de threat intelligence se hacen solo cuando existe una IP externa
 relevante o en blacklist; no se consultan APIs para todo el trafico.
 
-## 15. SQLite
+## 16. SQLite
 
 Los eventos del IDS se guardan en una base SQLite local configurada con:
 
@@ -347,8 +433,15 @@ Eventos principales:
 - `THREAT_INTEL_RESULT`
 - `ALERT_SENT`
 - `ALERT_SUPPRESSED`
+- `ADMIN_LOGIN_SUCCESS`
+- `ADMIN_LOGIN_FAILED`
+- `ADMIN_LOGOUT`
+- `ADMIN_WHITELIST_ADD`
+- `ADMIN_WHITELIST_REMOVE`
+- `ADMIN_BLACKLIST_ADD`
+- `ADMIN_BLACKLIST_REMOVE`
 
-## 16. Reportes
+## 17. Reportes
 
 Generar reportes acumulados desde SQLite:
 
@@ -382,7 +475,7 @@ Filtros disponibles:
 Los reportes no deben contener contrasenas, API keys, tokens ni secretos y
 muestran un resumen en consola.
 
-## 17. Politica de retencion
+## 18. Politica de retencion
 
 Para evitar crecimiento ilimitado durante ejecucion 24/7:
 
@@ -400,7 +493,7 @@ El comando:
 No borra eventos recientes ni archivos que no coincidan con el patron de
 reportes `gleipnir_report_*.json` o `gleipnir_report_*.csv`.
 
-## 18. Pruebas
+## 19. Pruebas
 
 Cuando las dependencias esten instaladas:
 
@@ -414,7 +507,7 @@ Sin `pytest`, muchos modulos tambien pueden validarse con `unittest`:
 python -m unittest discover -s tests
 ```
 
-## 19. Troubleshooting basico
+## 20. Troubleshooting basico
 
 - Error de `.env`: ejecutar `gleipnir test-config`.
 - Estado operativo dudoso: ejecutar `gleipnir status`.
@@ -431,3 +524,9 @@ python -m unittest discover -s tests
   `EVENT_RETENTION_DAYS`, `MAX_LOG_SIZE_MB` y `MAX_REPORTS_TO_KEEP`.
 - Alertas a spam: revisar reputacion del remitente, SPF/DKIM/DMARC del dominio
   y reglas del servidor de correo.
+- Dashboard bloquea `0.0.0.0`: agregar `--allow-lan` solo si es red local
+  autorizada y mantener autenticacion activa.
+- Login dashboard falla: revisar `DASHBOARD_AUTH_ENABLED`, usuario, rol,
+  `DASHBOARD_SECRET_KEY` y timeout de sesion.
+- Administracion web rechaza cambios: verificar que el usuario tenga rol
+  `admin` y que el formulario tenga token CSRF valido.

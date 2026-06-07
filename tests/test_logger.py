@@ -19,6 +19,8 @@ class DummyConfig:
     abuseipdb_api_key: str = "abuse-secret"
     virustotal_api_key: str = "vt-secret"
     dashboard_password: str = "dashboard-secret"
+    dashboard_admin_password: str = "dashboard-admin-secret"
+    dashboard_secret_key: str = "dashboard-secret-key"
     max_log_size_mb: int = 50
 
 
@@ -68,6 +70,11 @@ class LoggerTests(unittest.TestCase):
                     "runtime-token",
                 )
                 logger.warning("dashboard password=%s", config.dashboard_password)
+                logger.warning(
+                    "dashboard admin password=%s",
+                    config.dashboard_admin_password,
+                )
+                logger.warning("dashboard secret=%s", config.dashboard_secret_key)
                 self._flush(logger)
 
                 emitted_text = (
@@ -78,6 +85,8 @@ class LoggerTests(unittest.TestCase):
                 self.assertNotIn(config.smtp_password, emitted_text)
                 self.assertNotIn(config.abuseipdb_api_key, emitted_text)
                 self.assertNotIn(config.dashboard_password, emitted_text)
+                self.assertNotIn(config.dashboard_admin_password, emitted_text)
+                self.assertNotIn(config.dashboard_secret_key, emitted_text)
                 self.assertNotIn("runtime-token", emitted_text)
                 self.assertIn(REDACTED_VALUE, emitted_text)
             finally:

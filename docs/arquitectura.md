@@ -43,11 +43,15 @@ flowchart LR
   TI --> CACHE["Cache JSON local"]
   STORE --> DB
   DB --> REP["reports.py"]
+  DB --> DASH["dashboard/app.py"]
   MAINT --> DB
   MAINT --> LOG
   MAINT --> REP
   REP --> OUT["JSON / CSV"]
   STATUS --> OUT
+  DASH --> DB
+  DASH --> AUDIT["Eventos ADMIN_*"]
+  DASH --> SEC["Auth / CSRF / Headers"]
 ```
 
 ## Modulos
@@ -71,6 +75,10 @@ Configuraciones relevantes de la version 2.0:
 - `GLEIPNIR_INTERFACE`
 - `GLEIPNIR_MODE`
 - API keys opcionales para AbuseIPDB y VirusTotal.
+- Variables del dashboard: `DASHBOARD_AUTH_ENABLED`,
+  `DASHBOARD_SECRET_KEY`, `DASHBOARD_ROLE`,
+  `DASHBOARD_SESSION_COOKIE_SECURE` y
+  `DASHBOARD_SESSION_TIMEOUT_MINUTES`.
 
 ### `src/logger.py`
 
@@ -173,6 +181,36 @@ eventos normalizados y un `raw_json` sanitizado. Eventos persistidos:
 - `THREAT_INTEL_RESULT`
 - `ALERT_SENT`
 - `ALERT_SUPPRESSED`
+- `ADMIN_LOGIN_SUCCESS`
+- `ADMIN_LOGIN_FAILED`
+- `ADMIN_LOGOUT`
+- `ADMIN_WHITELIST_ADD`
+- `ADMIN_WHITELIST_REMOVE`
+- `ADMIN_BLACKLIST_ADD`
+- `ADMIN_BLACKLIST_REMOVE`
+
+### `src/dashboard/app.py`
+
+Expone el dashboard web local con Flask. Lee eventos desde SQLite, muestra
+resumenes, filtros, graficas simples y detalle de eventos. Las vistas de eventos
+son de solo lectura. La seccion `/admin/lists` permite administrar whitelist y
+blacklist solo con rol `admin`.
+
+Controles del dashboard:
+
+- Host por defecto `127.0.0.1`.
+- `0.0.0.0` solo desde CLI con `--allow-lan`.
+- Login con sesion cuando `DASHBOARD_AUTH_ENABLED=true`.
+- Roles `viewer` y `admin`.
+- Tokens CSRF en formularios administrativos.
+- Expiracion de sesion por `DASHBOARD_SESSION_TIMEOUT_MINUTES`.
+- Cookies `HttpOnly`, `SameSite=Lax` y `Secure` configurable.
+- Cabeceras `X-Content-Type-Options`, `X-Frame-Options`,
+  `Referrer-Policy`, `Cache-Control` y CSP basica.
+- Auditoria `ADMIN_*` en SQLite o logger sin contrasenas, tokens ni secretos.
+
+Para produccion real, Flask debe quedar detras de Nginx/Caddy escuchando en
+`127.0.0.1`, con TLS terminado en el reverse proxy.
 
 ### `src/reports.py`
 
@@ -207,6 +245,8 @@ Interfaz de linea de comandos con `argparse`. Expone:
 - `gleipnir maintenance`
 - `gleipnir whitelist ...`
 - `gleipnir blacklist ...`
+- `gleipnir dashboard --host 127.0.0.1 --port 8080`
+- `gleipnir dashboard --host 0.0.0.0 --port 8080 --allow-lan`
 
 ### `deploy/systemd/gleipnir.service`
 
@@ -229,6 +269,7 @@ Plantilla de servicio para Ubuntu 24.04 LTS. Ejecuta Gleipnir desde
 11. Reports genera JSON/CSV filtrados desde SQLite.
 12. Status valida la salud local sin enviar correos reales.
 13. Maintenance aplica retencion de eventos, reportes y logs.
+14. Dashboard lee SQLite y registra auditoria administrativa `ADMIN_*`.
 
 ## Superficie defensiva
 
@@ -240,6 +281,7 @@ El proyecto esta limitado a observacion y analisis defensivo. No incluye:
 - Evasion.
 - Descifrado de trafico cifrado.
 - Captura fuera de redes propias o sin autorizacion.
+- Exposicion publica deliberada del dashboard sin HTTPS ni autenticacion.
 
 ## Modos operativos
 

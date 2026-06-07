@@ -30,6 +30,12 @@ MAX_REPORTS_TO_KEEP=7
 DASHBOARD_AUTH_ENABLED=true
 DASHBOARD_USERNAME=dashboard-admin
 DASHBOARD_PASSWORD=dashboard-secret-password
+DASHBOARD_ROLE=admin
+DASHBOARD_ADMIN_USERNAME=dashboard-superadmin
+DASHBOARD_ADMIN_PASSWORD=dashboard-admin-password
+DASHBOARD_SECRET_KEY=dashboard-secret-key
+DASHBOARD_SESSION_COOKIE_SECURE=true
+DASHBOARD_SESSION_TIMEOUT_MINUTES=45
 """
 
 
@@ -65,6 +71,12 @@ def test_load_config_reads_required_values(tmp_path: Path) -> None:
     assert config.dashboard_auth_enabled is True
     assert config.dashboard_username == "dashboard-admin"
     assert config.dashboard_password == "dashboard-secret-password"
+    assert config.dashboard_role == "admin"
+    assert config.dashboard_admin_username == "dashboard-superadmin"
+    assert config.dashboard_admin_password == "dashboard-admin-password"
+    assert config.dashboard_secret_key == "dashboard-secret-key"
+    assert config.dashboard_session_cookie_secure is True
+    assert config.dashboard_session_timeout_minutes == 45
 
 
 def test_config_repr_does_not_expose_secrets(tmp_path: Path) -> None:
@@ -78,6 +90,8 @@ def test_config_repr_does_not_expose_secrets(tmp_path: Path) -> None:
     assert "abuse-secret" not in visible_text
     assert "vt-secret" not in visible_text
     assert "dashboard-secret-password" not in visible_text
+    assert "dashboard-admin-password" not in visible_text
+    assert "dashboard-secret-key" not in visible_text
 
 
 def test_load_config_reports_missing_required_values(tmp_path: Path) -> None:
@@ -121,4 +135,29 @@ def test_load_config_rejects_invalid_dashboard_auth_flag(tmp_path: Path) -> None
     )
 
     with pytest.raises(ConfigError, match="DASHBOARD_AUTH_ENABLED"):
+        load_config(env_file=env_file, environ={})
+
+
+def test_load_config_rejects_invalid_dashboard_role(tmp_path: Path) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        VALID_ENV.replace("DASHBOARD_ROLE=admin", "DASHBOARD_ROLE=owner"),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError, match="DASHBOARD_ROLE"):
+        load_config(env_file=env_file, environ={})
+
+
+def test_load_config_rejects_invalid_dashboard_session_timeout(tmp_path: Path) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        VALID_ENV.replace(
+            "DASHBOARD_SESSION_TIMEOUT_MINUTES=45",
+            "DASHBOARD_SESSION_TIMEOUT_MINUTES=0",
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError, match="DASHBOARD_SESSION_TIMEOUT_MINUTES"):
         load_config(env_file=env_file, environ={})

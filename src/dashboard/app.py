@@ -6,9 +6,11 @@ import html
 import hmac
 import ipaddress
 import json
+import secrets
+import time as time_module
 from collections import Counter
 from dataclasses import dataclass
-from datetime import datetime, time, timezone
+from datetime import datetime, time, timedelta, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -17,6 +19,13 @@ from src.detector import AUTHORIZED_DEVICE, BLACKLISTED_EXTERNAL_IP, UNAUTHORIZE
 from src.storage import (
     ALERT_SENT,
     ALERT_SUPPRESSED,
+    ADMIN_BLACKLIST_ADD,
+    ADMIN_BLACKLIST_REMOVE,
+    ADMIN_LOGIN_FAILED,
+    ADMIN_LOGIN_SUCCESS,
+    ADMIN_LOGOUT,
+    ADMIN_WHITELIST_ADD,
+    ADMIN_WHITELIST_REMOVE,
     DNS_EVENT,
     HTTP_EVENT,
     SQLiteEventStore,
@@ -24,16 +33,36 @@ from src.storage import (
 )
 
 try:
-    from flask import Flask, Response, jsonify, request
+    from flask import Flask, Response, g, jsonify, redirect, request, session
 except ImportError:  # pragma: no cover - exercised only when Flask is missing.
     Flask = None
     Response = None
+    g = None
     jsonify = None
+    redirect = None
     request = None
+    session = None
 
 
 LATEST_EVENT_LIMIT = 50
 ADMIN_LIST_ACTION = "ADMIN_LIST_ACTION"
+CSRF_SESSION_KEY = "gleipnir_csrf_token"
+CSRF_FORM_FIELD = "csrf_token"
+CSRF_PROTECTED_METHODS = {"POST", "PUT", "DELETE"}
+SESSION_ROLE_KEY = "gleipnir_dashboard_role"
+SESSION_LOGIN_AT_KEY = "gleipnir_dashboard_login_at"
+SESSION_USERNAME_KEY = "gleipnir_dashboard_username"
+DEFAULT_SESSION_TIMEOUT_MINUTES = 30
+DASHBOARD_CONTENT_SECURITY_POLICY = (
+    "default-src 'self'; "
+    "script-src 'self'; "
+    "style-src 'self' 'unsafe-inline'; "
+    "img-src 'self' data:; "
+    "connect-src 'self'; "
+    "base-uri 'self'; "
+    "form-action 'self'; "
+    "frame-ancestors 'none'"
+)
 REDACTED_VALUE = "[REDACTED]"
 SECRET_FIELD_HINTS = (
     "password",
@@ -138,15 +167,83 @@ def create_app(config: Any | None = None, *, event_store_factory=SQLiteEventStor
     runtime_config = config or _load_runtime_config()
     _validate_dashboard_auth_settings(runtime_config)
     app = Flask(__name__)
+    if _dashboard_auth_enabled(runtime_config):
+        app.secret_key = _dashboard_secret_key(runtime_config)
+    _configure_dashboard_session(app, runtime_config)
     app.config["GLEIPNIR_CONFIG"] = runtime_config
     app.config["GLEIPNIR_EVENT_STORE_FACTORY"] = event_store_factory
 
     @app.before_request
     def require_dashboard_auth():
-        if _is_dashboard_request_authorized(app.config["GLEIPNIR_CONFIG"]):
+        if request.endpoint in {"login", "logout"}:
             return None
 
-        return _dashboard_auth_challenge()
+        role = _authenticated_dashboard_role(app.config["GLEIPNIR_CONFIG"])
+        if role is not None:
+            g.dashboard_role = role
+            return None
+
+        return _dashboard_login_required_response()
+
+    @app.after_request
+    def add_dashboard_security_headers(response):
+        _apply_dashboard_security_headers(response, app.config["GLEIPNIR_CONFIG"])
+        return response
+
+    @app.route("/login", methods=["GET", "POST"])
+    def login():
+        runtime_config = app.config["GLEIPNIR_CONFIG"]
+        if not _dashboard_auth_enabled(runtime_config):
+            return redirect("/")
+
+        if request.method == "POST":
+            username = _form_value(request.form, "username")
+            role = _role_for_credentials(
+                runtime_config,
+                username,
+                _form_value(request.form, "password"),
+            )
+            if role is None:
+                _record_dashboard_audit_event(
+                    runtime_config,
+                    ADMIN_LOGIN_FAILED,
+                    username=username,
+                    action="login",
+                    result="failed",
+                    message="Dashboard login failed.",
+                )
+                return _render_login_html(error="Credenciales invalidas."), 401
+
+            _establish_dashboard_session(username, role)
+            _record_dashboard_audit_event(
+                runtime_config,
+                ADMIN_LOGIN_SUCCESS,
+                username=username,
+                action="login",
+                result="success",
+                message="Dashboard login succeeded.",
+            )
+            return redirect("/")
+
+        return _render_login_html()
+
+    @app.get("/logout")
+    def logout():
+        runtime_config = app.config["GLEIPNIR_CONFIG"]
+        if not _dashboard_auth_enabled(runtime_config):
+            return redirect("/")
+
+        username = _current_dashboard_username()
+        _clear_dashboard_session()
+        _record_dashboard_audit_event(
+            runtime_config,
+            ADMIN_LOGOUT,
+            username=username,
+            action="logout",
+            result="success",
+            message="Dashboard logout completed.",
+        )
+        return redirect("/login")
 
     @app.get("/")
     def index():
@@ -158,7 +255,8 @@ def create_app(config: Any | None = None, *, event_store_factory=SQLiteEventStor
         )
         return _render_dashboard_html(
             data,
-            admin_available=_dashboard_auth_enabled(app.config["GLEIPNIR_CONFIG"]),
+            admin_available=_current_dashboard_role() == "admin",
+            auth_enabled=_dashboard_auth_enabled(app.config["GLEIPNIR_CONFIG"]),
         )
 
     @app.get("/health")
@@ -213,9 +311,13 @@ def create_app(config: Any | None = None, *, event_store_factory=SQLiteEventStor
         runtime_config = app.config["GLEIPNIR_CONFIG"]
         if not _dashboard_auth_enabled(runtime_config):
             return _render_admin_unavailable_html(), 404
+        if _current_dashboard_role() != "admin":
+            return _render_admin_access_denied_html(), 403
 
         notice: dict[str, str] | None = None
-        if request.method == "POST":
+        if request.method in CSRF_PROTECTED_METHODS:
+            if not _valid_csrf_token(request.form):
+                return _csrf_error_response(), 400
             notice = _handle_admin_list_post(runtime_config, request.form)
 
         data = _load_admin_list_data(runtime_config)
@@ -233,20 +335,132 @@ def _validate_dashboard_auth_settings(config: Any) -> None:
             "Dashboard authentication is enabled. Set DASHBOARD_USERNAME and "
             "DASHBOARD_PASSWORD in .env."
         )
+    if not _dashboard_secret_key(config):
+        raise DashboardError(
+            "Dashboard authentication is enabled. Set DASHBOARD_SECRET_KEY in .env "
+            "to protect administrative forms against CSRF."
+        )
+    if _has_partial_admin_credentials(config):
+        raise DashboardError(
+            "Set both DASHBOARD_ADMIN_USERNAME and DASHBOARD_ADMIN_PASSWORD, or "
+            "leave both empty."
+        )
 
 
-def _is_dashboard_request_authorized(config: Any) -> bool:
+def _configure_dashboard_session(app: Any, config: Any) -> None:
+    app.config["SESSION_COOKIE_HTTPONLY"] = True
+    app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+    app.config["SESSION_COOKIE_SECURE"] = _dashboard_session_cookie_secure(config)
+    app.permanent_session_lifetime = timedelta(
+        minutes=_dashboard_session_timeout_minutes(config)
+    )
+
+
+def _apply_dashboard_security_headers(response: Any, config: Any) -> None:
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["Content-Security-Policy"] = DASHBOARD_CONTENT_SECURITY_POLICY
+
+    if _dashboard_auth_enabled(config) or request.path.startswith("/admin/"):
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+
+
+def _authenticated_dashboard_role(config: Any) -> str | None:
     if not _dashboard_auth_enabled(config):
+        return "viewer"
+
+    session_role = _authenticated_session_role(config)
+    if session_role is not None:
+        return session_role
+
+    return _authenticated_basic_auth_role(config)
+
+
+def _authenticated_session_role(config: Any) -> str | None:
+    role = session.get(SESSION_ROLE_KEY)
+    login_at = session.get(SESSION_LOGIN_AT_KEY)
+    if not role or login_at is None:
+        return None
+
+    if _dashboard_session_expired(config, login_at):
+        _clear_dashboard_session()
+        return None
+
+    cleaned_role = str(role).strip().lower()
+    if cleaned_role not in {"viewer", "admin"}:
+        _clear_dashboard_session()
+        return None
+
+    return cleaned_role
+
+
+def _dashboard_session_expired(config: Any, login_at: Any) -> bool:
+    try:
+        login_timestamp = float(login_at)
+    except (TypeError, ValueError):
         return True
 
+    timeout_seconds = _dashboard_session_timeout_minutes(config) * 60
+    return (time_module.time() - login_timestamp) > timeout_seconds
+
+
+def _authenticated_basic_auth_role(config: Any) -> str | None:
     authorization = request.authorization
     if authorization is None:
-        return False
+        return None
 
-    expected_username = _dashboard_username(config) or ""
-    expected_password = _dashboard_password(config) or ""
     provided_username = authorization.username or ""
     provided_password = authorization.password or ""
+
+    return _role_for_credentials(config, provided_username, provided_password)
+
+
+def _role_for_credentials(
+    config: Any,
+    provided_username: str,
+    provided_password: str,
+) -> str | None:
+    if _credentials_match(
+        provided_username,
+        provided_password,
+        _dashboard_username(config),
+        _dashboard_password(config),
+    ):
+        return _dashboard_role(config)
+    if _credentials_match(
+        provided_username,
+        provided_password,
+        _dashboard_admin_username(config),
+        _dashboard_admin_password(config),
+    ):
+        return "admin"
+
+    return None
+
+
+def _establish_dashboard_session(username: str, role: str) -> None:
+    session.clear()
+    session.permanent = True
+    session[SESSION_USERNAME_KEY] = username
+    session[SESSION_ROLE_KEY] = role
+    session[SESSION_LOGIN_AT_KEY] = time_module.time()
+
+
+def _clear_dashboard_session() -> None:
+    session.clear()
+
+
+def _credentials_match(
+    provided_username: str,
+    provided_password: str,
+    expected_username: str | None,
+    expected_password: str | None,
+) -> bool:
+    if expected_username is None or expected_password is None:
+        return False
 
     return _safe_compare(provided_username, expected_username) and _safe_compare(
         provided_password,
@@ -254,9 +468,9 @@ def _is_dashboard_request_authorized(config: Any) -> bool:
     )
 
 
-def _dashboard_auth_challenge() -> Any:
+def _dashboard_login_required_response() -> Any:
     return Response(
-        "Dashboard authentication required.",
+        _render_login_html(),
         401,
         {"WWW-Authenticate": 'Basic realm="Gleipnir Dashboard"'},
     )
@@ -288,8 +502,106 @@ def _dashboard_password(config: Any) -> str | None:
     return cleaned or None
 
 
+def _dashboard_role(config: Any) -> str:
+    role = str(getattr(config, "dashboard_role", "viewer") or "viewer").strip().lower()
+    return role if role in {"viewer", "admin"} else "viewer"
+
+
+def _dashboard_admin_username(config: Any) -> str | None:
+    username = getattr(config, "dashboard_admin_username", None)
+    if username is None:
+        return None
+
+    cleaned = str(username).strip()
+    return cleaned or None
+
+
+def _dashboard_admin_password(config: Any) -> str | None:
+    password = getattr(config, "dashboard_admin_password", None)
+    if password is None:
+        return None
+
+    cleaned = str(password).strip()
+    return cleaned or None
+
+
+def _has_partial_admin_credentials(config: Any) -> bool:
+    return bool(_dashboard_admin_username(config)) != bool(
+        _dashboard_admin_password(config)
+    )
+
+
+def _dashboard_secret_key(config: Any) -> str | None:
+    secret_key = getattr(config, "dashboard_secret_key", None)
+    if secret_key is None:
+        return None
+
+    cleaned = str(secret_key).strip()
+    return cleaned or None
+
+
+def _dashboard_session_cookie_secure(config: Any) -> bool:
+    value = getattr(config, "dashboard_session_cookie_secure", False)
+    if isinstance(value, bool):
+        return value
+
+    return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _dashboard_session_timeout_minutes(config: Any) -> int:
+    value = getattr(
+        config,
+        "dashboard_session_timeout_minutes",
+        DEFAULT_SESSION_TIMEOUT_MINUTES,
+    )
+    try:
+        timeout_minutes = int(value)
+    except (TypeError, ValueError):
+        return DEFAULT_SESSION_TIMEOUT_MINUTES
+
+    return max(1, timeout_minutes)
+
+
+def _current_dashboard_role() -> str:
+    return str(getattr(g, "dashboard_role", "viewer") or "viewer")
+
+
+def _current_dashboard_username() -> str | None:
+    session_username = session.get(SESSION_USERNAME_KEY)
+    if session_username:
+        return str(session_username)
+
+    authorization = request.authorization
+    if authorization is not None and authorization.username:
+        return str(authorization.username)
+
+    return None
+
+
 def _safe_compare(provided: str, expected: str) -> bool:
     return hmac.compare_digest(provided.encode("utf-8"), expected.encode("utf-8"))
+
+
+def _get_csrf_token() -> str:
+    token = session.get(CSRF_SESSION_KEY)
+    if not token:
+        token = secrets.token_urlsafe(32)
+        session[CSRF_SESSION_KEY] = token
+
+    return str(token)
+
+
+def _valid_csrf_token(form: Mapping[str, Any]) -> bool:
+    expected_token = session.get(CSRF_SESSION_KEY)
+    provided_token = _form_value(form, CSRF_FORM_FIELD)
+    if not expected_token or not provided_token:
+        return False
+
+    return _safe_compare(provided_token, str(expected_token))
+
+
+def _csrf_error_response() -> Any:
+    return Response("Invalid or missing CSRF token.", 400)
 
 
 def _load_admin_list_data(config: Any) -> AdminListData:
@@ -400,16 +712,115 @@ def _record_admin_action(
     result: str,
     details: str,
 ) -> None:
+    username = _current_dashboard_username()
+    specific_event_type = _admin_action_event_type(action)
     message = (
-        f"Dashboard admin list action: action={action} target={target} "
+        f"Dashboard admin action: user={_audit_username(username)} "
+        f"action={action} target={target} "
         f"result={result} details={details}"
     )
 
-    _write_admin_action_log(config, message)
-    _write_admin_action_storage(config, action, target, result, details, message)
+    if specific_event_type is not None:
+        _record_dashboard_audit_event(
+            config,
+            specific_event_type,
+            username=username,
+            action=action,
+            result=result,
+            message=message,
+            target=target,
+            details=details,
+        )
+
+    _record_legacy_admin_list_action(
+        config,
+        action,
+        target,
+        result,
+        details,
+        message,
+        username=username,
+    )
 
 
-def _write_admin_action_log(config: Any, message: str) -> None:
+def _admin_action_event_type(action: str) -> str | None:
+    return {
+        "whitelist_add": ADMIN_WHITELIST_ADD,
+        "whitelist_remove": ADMIN_WHITELIST_REMOVE,
+        "blacklist_add": ADMIN_BLACKLIST_ADD,
+        "blacklist_remove": ADMIN_BLACKLIST_REMOVE,
+    }.get(action)
+
+
+def _record_dashboard_audit_event(
+    config: Any,
+    event_type: str,
+    *,
+    username: str | None,
+    action: str,
+    result: str,
+    message: str,
+    target: str | None = None,
+    details: str | None = None,
+) -> None:
+    timestamp = datetime.now(tz=timezone.utc).timestamp()
+    safe_username = _audit_username(username)
+    remote_ip = _dashboard_remote_ip()
+    raw_payload = {
+        "component": "dashboard_admin",
+        "user": safe_username,
+        "action": action,
+        "remote_ip": remote_ip,
+        "result": result,
+        "message": message,
+    }
+    if target is not None:
+        raw_payload["target"] = target
+    if details is not None:
+        raw_payload["details"] = details
+
+    if not _write_dashboard_audit_storage(
+        config,
+        event_type=event_type,
+        timestamp=timestamp,
+        severity="INFO" if result == "success" else "MEDIA",
+        message=message,
+        raw=raw_payload,
+    ):
+        _write_dashboard_audit_log(config, message)
+
+
+def _record_legacy_admin_list_action(
+    config: Any,
+    action: str,
+    target: str,
+    result: str,
+    details: str,
+    message: str,
+    *,
+    username: str | None,
+) -> None:
+    _write_dashboard_audit_log(config, message)
+    _write_dashboard_audit_storage(
+        config,
+        event_type=ADMIN_LIST_ACTION,
+        timestamp=datetime.now(tz=timezone.utc).timestamp(),
+        severity="INFO" if result == "success" else "MEDIA",
+        message=message,
+        raw={
+            "component": "dashboard_admin",
+            "user": _audit_username(username),
+            "action": action,
+            "target": target,
+            "remote_ip": _dashboard_remote_ip(),
+            "result": result,
+            "details": details,
+            "message": message,
+        },
+    )
+
+
+def _write_dashboard_audit_log(config: Any, message: str) -> None:
     if getattr(config, "log_dir", None) is None:
         return
 
@@ -422,36 +833,44 @@ def _write_admin_action_log(config: Any, message: str) -> None:
         return
 
 
-def _write_admin_action_storage(
+def _write_dashboard_audit_storage(
     config: Any,
-    action: str,
-    target: str,
-    result: str,
-    details: str,
+    *,
+    event_type: str,
+    timestamp: float,
+    severity: str,
     message: str,
-) -> None:
+    raw: Mapping[str, Any],
+) -> bool:
     if getattr(config, "ids_db_path", None) is None:
-        return
+        return False
 
     store = SQLiteEventStore.from_config(config)
     try:
         store.save_event(
-            event_type=ADMIN_LIST_ACTION,
-            timestamp=datetime.now(tz=timezone.utc).timestamp(),
-            severity="INFO" if result == "success" else "MEDIA",
+            event_type=event_type,
+            timestamp=timestamp,
+            severity=severity,
+            source_ip=str(raw.get("remote_ip") or "") or None,
             message=message,
-            raw={
-                "component": "dashboard_admin",
-                "action": action,
-                "target": target,
-                "result": result,
-                "details": details,
-            },
+            raw=dict(raw),
         )
+        return True
     except Exception:
-        return
+        return False
     finally:
         store.close()
+
+
+def _dashboard_remote_ip() -> str | None:
+    forwarded_for = request.headers.get("X-Forwarded-For", "")
+    first_forwarded = forwarded_for.split(",", 1)[0].strip()
+    return first_forwarded or request.remote_addr or None
+
+
+def _audit_username(username: str | None) -> str:
+    cleaned = str(username or "").strip()
+    return cleaned or "unknown"
 
 
 def _admin_notice(level: str, message: str) -> dict[str, str]:
@@ -659,12 +1078,22 @@ def _is_external_ip_event(event: StoredEvent) -> bool:
     )
 
 
-def _render_dashboard_html(data: DashboardData, *, admin_available: bool = False) -> str:
+def _render_dashboard_html(
+    data: DashboardData,
+    *,
+    admin_available: bool = False,
+    auth_enabled: bool = False,
+) -> str:
     filter_form = _render_filter_form(data.filters)
     charts = _render_charts(data.charts)
     admin_link = (
         '<a class="nav-link" href="/admin/lists">Administrar listas</a>'
         if admin_available
+        else ""
+    )
+    logout_link = (
+        '<a class="nav-link" href="/logout">Cerrar sesion</a>'
+        if auth_enabled
         else ""
     )
     cards = "".join(
@@ -915,7 +1344,7 @@ def _render_dashboard_html(data: DashboardData, *, admin_available: bool = False
   <header>
     <h1>Gleipnir IDS Dashboard</h1>
     <p>Panel local de solo lectura para eventos almacenados en SQLite.</p>
-    <nav class="top-nav">{admin_link}</nav>
+    <nav class="top-nav">{admin_link}{logout_link}</nav>
   </header>
   <main>
     <div class="notice {'missing' if not data.database_exists else ''}">
@@ -1188,7 +1617,7 @@ def _render_event_detail_html(event: StoredEvent) -> str:
     <p>Vista local de solo lectura para revisar un evento almacenado.</p>
   </header>
   <main>
-    <div class="actions"><a href="/">Volver al dashboard</a></div>
+    <div class="actions"><a href="/">Volver al dashboard</a> | <a href="/logout">Cerrar sesion</a></div>
     <section class="panel">{rows}</section>
     <h2>raw_json</h2>
     <pre>{html.escape(formatted_raw)}</pre>
@@ -1238,6 +1667,111 @@ def _render_event_not_found_html(event_id: int) -> str:
 </html>"""
 
 
+def _render_login_html(*, error: str | None = None) -> str:
+    error_html = (
+        f'<div class="notice error">{html.escape(error)}</div>'
+        if error
+        else ""
+    )
+    return f"""<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Login - Gleipnir IDS Dashboard</title>
+  <style>
+    :root {{
+      color-scheme: light;
+      --bg: #f6f7f9;
+      --panel: #ffffff;
+      --text: #1d2433;
+      --muted: #687385;
+      --border: #d8dee8;
+      --accent: #1f6feb;
+      --danger: #b42318;
+    }}
+    * {{ box-sizing: border-box; }}
+    body {{
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      font-family: Arial, Helvetica, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+    }}
+    main {{
+      width: min(420px, calc(100vw - 32px));
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 22px;
+    }}
+    h1 {{
+      margin: 0 0 8px;
+      font-size: 24px;
+      letter-spacing: 0;
+    }}
+    p {{
+      margin: 0 0 18px;
+      color: var(--muted);
+    }}
+    label {{
+      display: block;
+      color: var(--muted);
+      font-size: 13px;
+      margin: 0 0 5px;
+    }}
+    input {{
+      width: 100%;
+      min-height: 38px;
+      border: 1px solid var(--border);
+      border-radius: 5px;
+      padding: 8px 10px;
+      margin-bottom: 12px;
+      background: white;
+      color: var(--text);
+      font: inherit;
+    }}
+    button {{
+      width: 100%;
+      min-height: 38px;
+      border: 1px solid var(--accent);
+      border-radius: 5px;
+      background: var(--accent);
+      color: white;
+      font: inherit;
+      cursor: pointer;
+    }}
+    .notice {{
+      margin-bottom: 14px;
+      padding: 10px 12px;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      background: #fff;
+    }}
+    .notice.error {{
+      border-left: 4px solid var(--danger);
+    }}
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Gleipnir IDS</h1>
+    <p>Acceso al dashboard local.</p>
+    {error_html}
+    <form method="post" action="/login">
+      <label for="username">Usuario</label>
+      <input id="username" name="username" autocomplete="username" required>
+      <label for="password">Contrasena</label>
+      <input id="password" name="password" type="password" autocomplete="current-password" required>
+      <button type="submit">Entrar</button>
+    </form>
+  </main>
+</body>
+</html>"""
+
+
 def _render_admin_lists_html(
     data: AdminListData,
     *,
@@ -1248,6 +1782,7 @@ def _render_admin_lists_html(
     blacklist_status = _render_admin_status(data.blacklist_error)
     whitelist_rows = _render_whitelist_admin_rows(data.whitelist_entries)
     blacklist_rows = _render_blacklist_admin_rows(data.blacklist_entries)
+    csrf_token = _get_csrf_token()
 
     return f"""<!doctype html>
 <html lang="es">
@@ -1432,9 +1967,9 @@ def _render_admin_lists_html(
               <tbody>{whitelist_rows}</tbody>
             </table>
           </div>
-          {_render_whitelist_add_form()}
-          {_render_whitelist_remove_form()}
-          {_render_validate_form("whitelist_validate", "Validar whitelist")}
+          {_render_whitelist_add_form(csrf_token)}
+          {_render_whitelist_remove_form(csrf_token)}
+          {_render_validate_form("whitelist_validate", "Validar whitelist", csrf_token)}
         </div>
       </section>
       <section>
@@ -1452,9 +1987,9 @@ def _render_admin_lists_html(
               <tbody>{blacklist_rows}</tbody>
             </table>
           </div>
-          {_render_blacklist_add_form()}
-          {_render_blacklist_remove_form()}
-          {_render_validate_form("blacklist_validate", "Validar blacklist")}
+          {_render_blacklist_add_form(csrf_token)}
+          {_render_blacklist_remove_form(csrf_token)}
+          {_render_validate_form("blacklist_validate", "Validar blacklist", csrf_token)}
         </div>
       </section>
     </div>
@@ -1497,6 +2032,47 @@ def _render_admin_unavailable_html() -> str:
     <div class="panel">
       <h1>Administracion no disponible</h1>
       <p>Esta seccion solo se habilita cuando DASHBOARD_AUTH_ENABLED=true.</p>
+      <p><a href="/">Volver al dashboard</a></p>
+    </div>
+  </main>
+</body>
+</html>"""
+
+
+def _render_admin_access_denied_html() -> str:
+    return """<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Acceso denegado - Gleipnir IDS</title>
+  <style>
+    body {
+      margin: 0;
+      font-family: Arial, Helvetica, sans-serif;
+      background: #f6f7f9;
+      color: #1d2433;
+    }
+    main {
+      max-width: 760px;
+      margin: 0 auto;
+      padding: 36px 24px;
+    }
+    .panel {
+      background: white;
+      border: 1px solid #d8dee8;
+      border-left: 4px solid #b42318;
+      border-radius: 6px;
+      padding: 18px;
+    }
+    a { color: #1f6feb; }
+  </style>
+</head>
+<body>
+  <main>
+    <div class="panel">
+      <h1>Acceso denegado</h1>
+      <p>Esta seccion requiere rol admin.</p>
       <p><a href="/">Volver al dashboard</a></p>
     </div>
   </main>
@@ -1551,10 +2127,11 @@ def _render_blacklist_admin_rows(entries: tuple[blacklist.BlacklistEntry, ...]) 
     )
 
 
-def _render_whitelist_add_form() -> str:
-    return """
+def _render_whitelist_add_form(csrf_token: str) -> str:
+    return f"""
     <form method="post" action="/admin/lists">
       <input type="hidden" name="action" value="whitelist_add">
+      {_csrf_hidden_input(csrf_token)}
       <h3>Agregar a whitelist</h3>
       <div class="form-grid">
         <div>
@@ -1577,10 +2154,11 @@ def _render_whitelist_add_form() -> str:
     """
 
 
-def _render_whitelist_remove_form() -> str:
-    return """
+def _render_whitelist_remove_form(csrf_token: str) -> str:
+    return f"""
     <form class="danger" method="post" action="/admin/lists">
       <input type="hidden" name="action" value="whitelist_remove">
+      {_csrf_hidden_input(csrf_token)}
       <h3>Eliminar de whitelist</h3>
       <div class="form-grid">
         <div>
@@ -1595,10 +2173,11 @@ def _render_whitelist_remove_form() -> str:
     """
 
 
-def _render_blacklist_add_form() -> str:
-    return """
+def _render_blacklist_add_form(csrf_token: str) -> str:
+    return f"""
     <form method="post" action="/admin/lists">
       <input type="hidden" name="action" value="blacklist_add">
+      {_csrf_hidden_input(csrf_token)}
       <h3>Agregar a blacklist</h3>
       <div class="form-grid">
         <div>
@@ -1617,10 +2196,11 @@ def _render_blacklist_add_form() -> str:
     """
 
 
-def _render_blacklist_remove_form() -> str:
-    return """
+def _render_blacklist_remove_form(csrf_token: str) -> str:
+    return f"""
     <form class="danger" method="post" action="/admin/lists">
       <input type="hidden" name="action" value="blacklist_remove">
+      {_csrf_hidden_input(csrf_token)}
       <h3>Eliminar de blacklist</h3>
       <div class="form-grid">
         <div>
@@ -1635,13 +2215,21 @@ def _render_blacklist_remove_form() -> str:
     """
 
 
-def _render_validate_form(action: str, label: str) -> str:
+def _render_validate_form(action: str, label: str, csrf_token: str) -> str:
     return f"""
     <form class="validate-form" method="post" action="/admin/lists">
       <input type="hidden" name="action" value="{html.escape(action)}">
+      {_csrf_hidden_input(csrf_token)}
       <button type="submit">{html.escape(label)}</button>
     </form>
     """
+
+
+def _csrf_hidden_input(csrf_token: str) -> str:
+    return (
+        f'<input type="hidden" name="{CSRF_FORM_FIELD}" '
+        f'value="{html.escape(csrf_token)}">'
+    )
 
 
 def _render_detail_row(label: str, value: Any) -> str:

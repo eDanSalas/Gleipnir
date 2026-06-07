@@ -69,10 +69,19 @@ Variables operativas principales:
 - `EVENT_RETENTION_DAYS=30`: dias de eventos SQLite que se conservan.
 - `MAX_LOG_SIZE_MB=50`: tamano maximo por archivo de log antes de rotar.
 - `MAX_REPORTS_TO_KEEP=20`: cantidad maxima de archivos de reporte generados.
-- `DASHBOARD_AUTH_ENABLED=true`: protege el dashboard con HTTP Basic Auth.
+- `DASHBOARD_AUTH_ENABLED=true`: protege el dashboard con login y sesion local.
 - `DASHBOARD_USERNAME=`: usuario local para el dashboard.
 - `DASHBOARD_PASSWORD=`: contrasena local del dashboard, nunca guardarla en
   codigo.
+- `DASHBOARD_ROLE=viewer`: rol del usuario principal; usar `viewer` para solo
+  visualizacion o `admin` para administrar listas.
+- `DASHBOARD_ADMIN_USERNAME=` y `DASHBOARD_ADMIN_PASSWORD=`: credenciales
+  opcionales para un usuario admin separado.
+- `DASHBOARD_SECRET_KEY=`: clave local larga para firmar sesion y proteger
+  formularios administrativos contra CSRF.
+- `DASHBOARD_SESSION_COOKIE_SECURE=false`: cambiar a `true` si se usa HTTPS.
+- `DASHBOARD_SESSION_TIMEOUT_MINUTES=30`: minutos antes de expirar la sesion
+  web.
 
 ## Captura live
 
@@ -114,12 +123,14 @@ por la interfaz autorizada y validar con `gleipnir status`.
 Para el dashboard web 24/7, `deploy/systemd/gleipnir-dashboard.service` ejecuta:
 
 ```bash
-/opt/gleipnir/.venv/bin/gleipnir dashboard --host 0.0.0.0 --port 8080
+/opt/gleipnir/.venv/bin/gleipnir dashboard --host 0.0.0.0 --port 8080 --allow-lan
 ```
 
 Este servicio tambien carga `/opt/gleipnir/.env`. Al exponer el dashboard en red
 local con `0.0.0.0`, mantener `DASHBOARD_AUTH_ENABLED=true` y configurar
-`DASHBOARD_USERNAME` y `DASHBOARD_PASSWORD`. Ver
+`DASHBOARD_USERNAME`, `DASHBOARD_PASSWORD`, `DASHBOARD_ROLE` y, si se administran
+listas desde navegador, `DASHBOARD_ADMIN_USERNAME` y
+`DASHBOARD_ADMIN_PASSWORD`. Ver
 `docs/dashboard_service.md`.
 
 ## CLI
@@ -165,7 +176,7 @@ http://127.0.0.1:8080
 En Ubuntu Server, para acceso desde otro equipo de la misma red:
 
 ```bash
-gleipnir dashboard --host 0.0.0.0 --port 8080
+gleipnir dashboard --host 0.0.0.0 --port 8080 --allow-lan
 ```
 
 Luego acceder desde navegador con:
@@ -174,25 +185,46 @@ Luego acceder desde navegador con:
 http://<IP_DEL_SERVIDOR>:8080
 ```
 
-Usar `0.0.0.0` expone el dashboard en la red local. Hacerlo solo en entornos
-controlados. El dashboard no abre navegador automaticamente, no muestra secretos
-del `.env`. La vista principal y `/events` aceptan filtros por tipo, severidad,
-IP origen/destino, MAC origen, dominio, protocolo y fechas. La vista incluye
-graficas simples sin internet: eventos por tipo, severidad, hora, top dominios,
-top IPs externas y alertas enviadas/suprimidas.
+Usar `0.0.0.0` expone el dashboard en todas las interfaces del servidor. La CLI
+rechaza esa ejecucion si no se agrega `--allow-lan`. Hacerlo solo en redes
+locales o laboratorios controlados y no exponerlo a internet. El dashboard no
+abre navegador automaticamente, no muestra secretos del `.env`. La vista
+principal y `/events` aceptan filtros por tipo, severidad, IP origen/destino,
+MAC origen, dominio, protocolo y fechas. La vista incluye graficas simples sin
+internet: eventos por tipo, severidad, hora, top dominios, top IPs externas y
+alertas enviadas/suprimidas.
+
+Si `DASHBOARD_AUTH_ENABLED=false`, la CLI bloquea `--host 0.0.0.0` incluso con
+`--allow-lan`. Para una demo muy controlada puede usarse
+`--allow-unauthenticated-lan`, pero no se recomienda.
 
 Para proteger el dashboard, configurar en `.env`:
 
 ```bash
 DASHBOARD_AUTH_ENABLED=true
-DASHBOARD_USERNAME=admin-local
-DASHBOARD_PASSWORD=cambiar-esta-contrasena
+DASHBOARD_USERNAME=viewer-local
+DASHBOARD_PASSWORD=<CONTRASENA_VIEWER>
+DASHBOARD_ROLE=viewer
+DASHBOARD_ADMIN_USERNAME=admin-local
+DASHBOARD_ADMIN_PASSWORD=<CONTRASENA_ADMIN>
+DASHBOARD_SECRET_KEY=<CLAVE_LARGA_ALEATORIA>
+DASHBOARD_SESSION_COOKIE_SECURE=false
+DASHBOARD_SESSION_TIMEOUT_MINUTES=30
 ```
 
 Si `DASHBOARD_AUTH_ENABLED=false`, el dashboard permite acceso sin login. Al
-usar `--host 0.0.0.0`, mantener la autenticacion activa. Esta proteccion usa
-HTTP Basic Auth para un entorno local/laboratorio; no exponer el dashboard a
-internet. Para produccion real se requeriria HTTPS y autenticacion mas robusta.
+usar `--host 0.0.0.0`, mantener la autenticacion activa. Con autenticacion
+activa, el dashboard ofrece `/login` y `/logout`, usa sesion Flask con
+expiracion y cookies `HttpOnly` con `SameSite=Lax`. `DASHBOARD_SESSION_COOKIE_SECURE`
+debe cambiarse a `true` cuando el dashboard este detras de HTTPS.
+
+El dashboard tambien acepta HTTP Basic Auth para compatibilidad local, pero
+Basic Auth no cifra credenciales por si solo. Usarlo solo en `localhost` o una
+red local confiable. Si se expone fuera del equipo, usar HTTPS mediante reverse
+proxy y no publicarlo en internet. Para produccion real se requeriria
+autenticacion mas robusta. Ver `docs/dashboard_https_reverse_proxy.md` para una
+guia conceptual con Nginx o Caddy y `docs/security.md` para el checklist de
+despliegue seguro.
 
 Con `DASHBOARD_AUTH_ENABLED=true`, tambien queda disponible una seccion
 administrativa opcional:
@@ -203,10 +235,26 @@ http://<IP_DEL_SERVIDOR>:8080/admin/lists
 
 Desde ahi se puede listar, agregar, eliminar y validar whitelist y blacklist
 usando los archivos configurados en `WHITELIST_FILE` y `BLACKLIST_FILE`. Esta
-seccion no esta disponible cuando la autenticacion esta desactivada. Las vistas
-de eventos siguen siendo de solo lectura. Las acciones administrativas se
-registran en logs y, si SQLite esta disponible, como eventos
-`ADMIN_LIST_ACTION`.
+seccion no esta disponible cuando la autenticacion esta desactivada y requiere
+rol `admin`. Un usuario `viewer` puede ver el dashboard, eventos, filtros y
+graficas, pero recibe acceso denegado en `/admin/lists`. Las vistas de eventos
+siguen siendo de solo lectura. Las acciones administrativas se registran en logs
+y, si SQLite esta disponible, como eventos `ADMIN_LIST_ACTION`. Todos los
+formularios administrativos usan token CSRF firmado con `DASHBOARD_SECRET_KEY`.
+El dashboard agrega cabeceras HTTP defensivas (`X-Content-Type-Options`,
+`X-Frame-Options`, `Referrer-Policy`, `Cache-Control` y CSP basica) y registra
+auditoria administrativa (`ADMIN_LOGIN_*`, `ADMIN_LOGOUT`,
+`ADMIN_WHITELIST_*`, `ADMIN_BLACKLIST_*`) sin guardar contrasenas, tokens CSRF
+ni secretos.
+
+Checklist minimo del dashboard:
+
+- `.env` local fuera de Git.
+- `DASHBOARD_SECRET_KEY` definido.
+- `DASHBOARD_AUTH_ENABLED=true` al usar `0.0.0.0`.
+- HTTPS con reverse proxy si se usa fuera de localhost.
+- Firewall o segmentacion restringiendo acceso.
+- Revisar logs y eventos de auditoria.
 
 Para dejar el dashboard activo 24/7 en Ubuntu Server 24.04 LTS, instalar el
 servicio:
@@ -227,7 +275,7 @@ http://<IP_DEL_SERVIDOR>:8080
 ```
 
 No ejecutar este servicio sin autenticacion cuando se expone con
-`--host 0.0.0.0`.
+`--host 0.0.0.0 --allow-lan`.
 
 `gleipnir replay` y `gleipnir live` usan el orquestador central `IDSEngine`,
 que coordina configuracion, logging, whitelist, blacklist, deteccion DNS/HTTP,
@@ -362,3 +410,7 @@ gleipnir blacklist validate
 - `docs/dashboard.md`: dashboard web local con vistas de eventos de solo
   lectura y administracion opcional de listas.
 - `docs/dashboard_service.md`: despliegue 24/7 del dashboard con systemd.
+- `docs/dashboard_https_reverse_proxy.md`: despliegue conceptual con HTTPS,
+  Nginx o Caddy como reverse proxy.
+- `docs/security.md`: medidas de seguridad del dashboard, riesgos mitigados y
+  checklist de despliegue seguro.

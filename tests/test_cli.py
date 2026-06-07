@@ -252,7 +252,10 @@ class CliTests(unittest.TestCase):
 
     def test_dashboard_command_starts_read_only_web_server(self) -> None:
         stdout = io.StringIO()
-        config = SimpleNamespace(ids_db_path=Path("data/events.db"))
+        config = SimpleNamespace(
+            ids_db_path=Path("data/events.db"),
+            dashboard_auth_enabled=True,
+        )
         app = Mock()
 
         with patch("src.cli._load_config", return_value=config):
@@ -264,6 +267,7 @@ class CliTests(unittest.TestCase):
                         "0.0.0.0",
                         "--port",
                         "8080",
+                        "--allow-lan",
                     ],
                     stdout=stdout,
                     stderr=io.StringIO(),
@@ -272,8 +276,105 @@ class CliTests(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         factory.assert_called_once_with(config=config)
         app.run.assert_called_once_with(host="0.0.0.0", port=8080)
-        self.assertIn("WARNING", stdout.getvalue())
+        self.assertIn("ADVERTENCIA", stdout.getvalue())
+        self.assertIn("no lo expongas a internet", stdout.getvalue())
         self.assertIn("read-only", stdout.getvalue())
+
+    def test_dashboard_localhost_starts_without_extra_flags(self) -> None:
+        stdout = io.StringIO()
+        config = SimpleNamespace(ids_db_path=Path("data/events.db"))
+        app = Mock()
+
+        with patch("src.cli._load_config", return_value=config):
+            with patch("src.cli.create_dashboard_app", return_value=app) as factory:
+                exit_code = cli.main(
+                    ["dashboard", "--host", "127.0.0.1", "--port", "8080"],
+                    stdout=stdout,
+                    stderr=io.StringIO(),
+                )
+
+        self.assertEqual(exit_code, 0)
+        factory.assert_called_once_with(config=config)
+        app.run.assert_called_once_with(host="127.0.0.1", port=8080)
+        self.assertNotIn("ADVERTENCIA", stdout.getvalue())
+
+    def test_dashboard_rejects_all_interfaces_without_allow_lan(self) -> None:
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        config = SimpleNamespace(
+            ids_db_path=Path("data/events.db"),
+            dashboard_auth_enabled=True,
+        )
+
+        with patch("src.cli._load_config", return_value=config):
+            with patch("src.cli.create_dashboard_app") as factory:
+                exit_code = cli.main(
+                    ["dashboard", "--host", "0.0.0.0", "--port", "8080"],
+                    stdout=stdout,
+                    stderr=stderr,
+                )
+
+        self.assertEqual(exit_code, 1)
+        factory.assert_not_called()
+        self.assertIn("--allow-lan", stderr.getvalue())
+        self.assertIn("internet", stderr.getvalue())
+
+    def test_dashboard_rejects_unauthenticated_lan_without_explicit_flag(self) -> None:
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        config = SimpleNamespace(
+            ids_db_path=Path("data/events.db"),
+            dashboard_auth_enabled=False,
+        )
+
+        with patch("src.cli._load_config", return_value=config):
+            with patch("src.cli.create_dashboard_app") as factory:
+                exit_code = cli.main(
+                    [
+                        "dashboard",
+                        "--host",
+                        "0.0.0.0",
+                        "--port",
+                        "8080",
+                        "--allow-lan",
+                    ],
+                    stdout=stdout,
+                    stderr=stderr,
+                )
+
+        self.assertEqual(exit_code, 1)
+        factory.assert_not_called()
+        self.assertIn("DASHBOARD_AUTH_ENABLED=false", stderr.getvalue())
+        self.assertIn("--allow-unauthenticated-lan", stderr.getvalue())
+
+    def test_dashboard_allows_unauthenticated_lan_only_with_explicit_flags(self) -> None:
+        stdout = io.StringIO()
+        config = SimpleNamespace(
+            ids_db_path=Path("data/events.db"),
+            dashboard_auth_enabled=False,
+        )
+        app = Mock()
+
+        with patch("src.cli._load_config", return_value=config):
+            with patch("src.cli.create_dashboard_app", return_value=app) as factory:
+                exit_code = cli.main(
+                    [
+                        "dashboard",
+                        "--host",
+                        "0.0.0.0",
+                        "--port",
+                        "8080",
+                        "--allow-lan",
+                        "--allow-unauthenticated-lan",
+                    ],
+                    stdout=stdout,
+                    stderr=io.StringIO(),
+                )
+
+        self.assertEqual(exit_code, 0)
+        factory.assert_called_once_with(config=config)
+        app.run.assert_called_once_with(host="0.0.0.0", port=8080)
+        self.assertIn("ADVERTENCIA", stdout.getvalue())
 
     def test_report_generates_json_and_csv(self) -> None:
         stdout = io.StringIO()

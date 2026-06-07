@@ -3,16 +3,33 @@
 from __future__ import annotations
 
 import base64
+import re
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 import pytest
 
 pytest.importorskip("flask")
 
-from src.dashboard.app import ADMIN_LIST_ACTION, DashboardError, create_app
+from src.dashboard.app import (
+    ADMIN_LIST_ACTION,
+    DASHBOARD_CONTENT_SECURITY_POLICY,
+    SESSION_LOGIN_AT_KEY,
+    DashboardError,
+    create_app,
+)
 from src.detector import AUTHORIZED_DEVICE, BLACKLISTED_EXTERNAL_IP, UNAUTHORIZED_DEVICE
 from src.storage import ALERT_SENT, DNS_EVENT, HTTP_EVENT, SQLiteEventStore
+from src.storage import (
+    ADMIN_BLACKLIST_ADD,
+    ADMIN_BLACKLIST_REMOVE,
+    ADMIN_LOGIN_FAILED,
+    ADMIN_LOGIN_SUCCESS,
+    ADMIN_LOGOUT,
+    ADMIN_WHITELIST_ADD,
+    ADMIN_WHITELIST_REMOVE,
+)
 from src.whitelist import load_whitelist
 from src.blacklist import list_blacklist_entries
 
@@ -21,6 +38,70 @@ def test_create_dashboard_app(tmp_path: Path) -> None:
     app = create_app(config=_config(tmp_path / "events.db"))
 
     assert app.name == "src.dashboard.app"
+
+
+def test_dashboard_index_includes_security_headers(tmp_path: Path) -> None:
+    app = create_app(config=_config(tmp_path / "missing.db"))
+
+    response = app.test_client().get("/")
+
+    _assert_common_security_headers(response)
+
+
+def test_dashboard_health_includes_security_headers(tmp_path: Path) -> None:
+    app = create_app(config=_config(tmp_path / "missing.db"))
+
+    response = app.test_client().get("/health")
+
+    _assert_common_security_headers(response)
+
+
+def test_dashboard_events_includes_security_headers(tmp_path: Path) -> None:
+    app = create_app(config=_config(tmp_path / "missing.db"))
+
+    response = app.test_client().get("/events")
+
+    _assert_common_security_headers(response)
+
+
+def test_dashboard_authenticated_routes_use_no_store(tmp_path: Path) -> None:
+    app = create_app(
+        config=_config(
+            tmp_path / "missing.db",
+            dashboard_auth_enabled=True,
+            dashboard_username="admin",
+            dashboard_password="secret-password",
+            dashboard_role="admin",
+        )
+    )
+
+    response = app.test_client().get(
+        "/health",
+        headers={"Authorization": _basic_auth("admin", "secret-password")},
+    )
+
+    _assert_no_store_headers(response)
+
+
+def test_dashboard_admin_routes_use_no_store(tmp_path: Path) -> None:
+    app = create_app(
+        config=_config(
+            tmp_path / "events.db",
+            dashboard_auth_enabled=True,
+            dashboard_username="admin",
+            dashboard_password="secret-password",
+            dashboard_role="admin",
+        )
+    )
+
+    response = app.test_client().get(
+        "/admin/lists",
+        headers={"Authorization": _basic_auth("admin", "secret-password")},
+    )
+
+    assert response.status_code == 200
+    _assert_common_security_headers(response)
+    _assert_no_store_headers(response)
 
 
 def test_dashboard_index_handles_missing_sqlite(tmp_path: Path) -> None:
@@ -187,6 +268,201 @@ def test_dashboard_auth_enabled_accepts_valid_credentials(tmp_path: Path) -> Non
     assert response.get_json()["database_exists"] is False
 
 
+def test_dashboard_login_accepts_valid_credentials(tmp_path: Path) -> None:
+    config = _config(
+        tmp_path / "missing.db",
+        dashboard_auth_enabled=True,
+        dashboard_username="viewer",
+        dashboard_password="viewer-password",
+        dashboard_role="viewer",
+    )
+    app = create_app(
+        config=config
+    )
+    client = app.test_client()
+
+    login_response = client.post(
+        "/login",
+        data={"username": "viewer", "password": "viewer-password"},
+        environ_overrides={"REMOTE_ADDR": "192.168.10.50"},
+    )
+    events_response = client.get("/events")
+    audit_events = _fetch_events(config.ids_db_path, ADMIN_LOGIN_SUCCESS)
+
+    assert login_response.status_code == 302
+    assert login_response.headers["Location"] == "/"
+    assert events_response.status_code == 200
+    assert audit_events[-1].raw["user"] == "viewer"
+    assert audit_events[-1].raw["action"] == "login"
+    assert audit_events[-1].raw["remote_ip"] == "192.168.10.50"
+    assert audit_events[-1].raw["result"] == "success"
+    _assert_audit_event_has_no_secrets(audit_events[-1])
+
+
+def test_dashboard_login_rejects_invalid_credentials_without_echoing_secret(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    config = _config(
+        tmp_path / "missing.db",
+        dashboard_auth_enabled=True,
+        dashboard_username="viewer",
+        dashboard_password="viewer-password",
+        dashboard_role="viewer",
+    )
+    app = create_app(
+        config=config
+    )
+
+    response = app.test_client().post(
+        "/login",
+        data={"username": "viewer", "password": "wrong-password"},
+        environ_overrides={"REMOTE_ADDR": "192.168.10.60"},
+    )
+    audit_events = _fetch_events(config.ids_db_path, ADMIN_LOGIN_FAILED)
+
+    assert response.status_code == 401
+    assert b"Credenciales invalidas" in response.data
+    assert b"wrong-password" not in response.data
+    assert b"viewer-password" not in response.data
+    assert "wrong-password" not in caplog.text
+    assert "viewer-password" not in caplog.text
+    assert audit_events[-1].raw["user"] == "viewer"
+    assert audit_events[-1].raw["action"] == "login"
+    assert audit_events[-1].raw["result"] == "failed"
+    assert audit_events[-1].raw["remote_ip"] == "192.168.10.60"
+    _assert_audit_event_has_no_secrets(audit_events[-1])
+
+
+def test_dashboard_audit_falls_back_to_logger_without_sqlite(tmp_path: Path) -> None:
+    config = _config(
+        tmp_path / "missing.db",
+        dashboard_auth_enabled=True,
+        dashboard_username="viewer",
+        dashboard_password="viewer-password",
+        dashboard_role="viewer",
+    )
+    config.ids_db_path = None
+    logger = Mock()
+    app = create_app(config=config)
+
+    with patch("src.logger.setup_logging") as setup_logging:
+        with patch("src.logger.get_logger", return_value=logger) as get_logger:
+            response = app.test_client().post(
+                "/login",
+                data={"username": "viewer", "password": "wrong-password"},
+            )
+
+    assert response.status_code == 401
+    setup_logging.assert_called()
+    get_logger.assert_called_with("dashboard_admin")
+    logger.info.assert_called()
+    logged_message = str(logger.info.call_args.args[0])
+    assert "Dashboard login failed" in logged_message
+    assert "wrong-password" not in logged_message
+    assert "viewer-password" not in logged_message
+    assert "token" not in logged_message.lower()
+
+
+def test_dashboard_logout_clears_session(tmp_path: Path) -> None:
+    config = _config(
+        tmp_path / "missing.db",
+        dashboard_auth_enabled=True,
+        dashboard_username="viewer",
+        dashboard_password="viewer-password",
+        dashboard_role="viewer",
+    )
+    app = create_app(
+        config=config
+    )
+    client = app.test_client()
+    client.post(
+        "/login",
+        data={"username": "viewer", "password": "viewer-password"},
+    )
+
+    assert client.get("/events").status_code == 200
+    logout_response = client.get("/logout")
+    blocked_response = client.get("/events")
+
+    assert logout_response.status_code == 302
+    assert logout_response.headers["Location"] == "/login"
+    assert blocked_response.status_code == 401
+    logout_events = _fetch_events(config.ids_db_path, ADMIN_LOGOUT)
+    assert logout_events[-1].raw["user"] == "viewer"
+    assert logout_events[-1].raw["action"] == "logout"
+    assert logout_events[-1].raw["result"] == "success"
+    _assert_audit_event_has_no_secrets(logout_events[-1])
+
+
+def test_dashboard_session_expiration_blocks_access(tmp_path: Path) -> None:
+    app = create_app(
+        config=_config(
+            tmp_path / "missing.db",
+            dashboard_auth_enabled=True,
+            dashboard_username="viewer",
+            dashboard_password="viewer-password",
+            dashboard_role="viewer",
+            dashboard_session_timeout_minutes=1,
+        )
+    )
+    client = app.test_client()
+    client.post(
+        "/login",
+        data={"username": "viewer", "password": "viewer-password"},
+    )
+    with client.session_transaction() as active_session:
+        active_session[SESSION_LOGIN_AT_KEY] = 0.0
+
+    response = client.get("/events")
+
+    assert response.status_code == 401
+    assert b"Acceso al dashboard local" in response.data
+
+
+def test_dashboard_session_cookie_settings(tmp_path: Path) -> None:
+    app = create_app(
+        config=_config(
+            tmp_path / "missing.db",
+            dashboard_auth_enabled=True,
+            dashboard_username="viewer",
+            dashboard_password="viewer-password",
+            dashboard_role="viewer",
+            dashboard_session_cookie_secure=True,
+        )
+    )
+
+    response = app.test_client().post(
+        "/login",
+        data={"username": "viewer", "password": "viewer-password"},
+    )
+    cookie_header = response.headers["Set-Cookie"]
+
+    assert "HttpOnly" in cookie_header
+    assert "SameSite=Lax" in cookie_header
+    assert "Secure" in cookie_header
+
+
+def test_dashboard_viewer_can_access_read_only_dashboard(tmp_path: Path) -> None:
+    app = create_app(
+        config=_config(
+            tmp_path / "missing.db",
+            dashboard_auth_enabled=True,
+            dashboard_username="viewer",
+            dashboard_password="viewer-password",
+            dashboard_role="viewer",
+        )
+    )
+
+    response = app.test_client().get(
+        "/",
+        headers={"Authorization": _basic_auth("viewer", "viewer-password")},
+    )
+
+    assert response.status_code == 200
+    assert b"Administrar listas" not in response.data
+
+
 def test_dashboard_auth_enabled_rejects_invalid_credentials(tmp_path: Path) -> None:
     app = create_app(
         config=_config(
@@ -207,6 +483,22 @@ def test_dashboard_auth_enabled_rejects_invalid_credentials(tmp_path: Path) -> N
     assert b"secret-password" not in response.data
 
 
+def test_dashboard_unauthenticated_access_is_blocked(tmp_path: Path) -> None:
+    app = create_app(
+        config=_config(
+            tmp_path / "missing.db",
+            dashboard_auth_enabled=True,
+            dashboard_username="viewer",
+            dashboard_password="viewer-password",
+        )
+    )
+
+    response = app.test_client().get("/events")
+
+    assert response.status_code == 401
+    assert b"Acceso al dashboard local" in response.data
+
+
 def test_dashboard_auth_enabled_requires_configured_credentials(tmp_path: Path) -> None:
     with pytest.raises(DashboardError, match="DASHBOARD_USERNAME"):
         create_app(
@@ -215,6 +507,33 @@ def test_dashboard_auth_enabled_requires_configured_credentials(tmp_path: Path) 
                 dashboard_auth_enabled=True,
                 dashboard_username="",
                 dashboard_password="",
+            )
+        )
+
+
+def test_dashboard_auth_enabled_requires_secret_key(tmp_path: Path) -> None:
+    with pytest.raises(DashboardError, match="DASHBOARD_SECRET_KEY"):
+        create_app(
+            config=_config(
+                tmp_path / "missing.db",
+                dashboard_auth_enabled=True,
+                dashboard_username="admin",
+                dashboard_password="secret-password",
+                dashboard_secret_key="",
+            )
+        )
+
+
+def test_dashboard_auth_enabled_rejects_partial_admin_credentials(tmp_path: Path) -> None:
+    with pytest.raises(DashboardError, match="DASHBOARD_ADMIN_USERNAME"):
+        create_app(
+            config=_config(
+                tmp_path / "missing.db",
+                dashboard_auth_enabled=True,
+                dashboard_username="viewer",
+                dashboard_password="viewer-password",
+                dashboard_admin_username="admin",
+                dashboard_admin_password="",
             )
         )
 
@@ -248,6 +567,35 @@ def test_dashboard_admin_lists_requires_authentication(tmp_path: Path) -> None:
     assert response.status_code == 401
 
 
+def test_dashboard_viewer_receives_403_on_admin_lists(tmp_path: Path) -> None:
+    app = create_app(
+        config=_config(
+            tmp_path / "events.db",
+            dashboard_auth_enabled=True,
+            dashboard_username="viewer",
+            dashboard_password="viewer-password",
+            dashboard_role="viewer",
+        )
+    )
+    auth_header = {"Authorization": _basic_auth("viewer", "viewer-password")}
+
+    get_response = app.test_client().get("/admin/lists", headers=auth_header)
+    post_response = app.test_client().post(
+        "/admin/lists",
+        data={
+            "action": "whitelist_add",
+            "ip": "192.168.1.20",
+            "mac": "AA:BB:CC:DD:EE:20",
+            "description": "Viewer blocked",
+        },
+        headers=auth_header,
+    )
+
+    assert get_response.status_code == 403
+    assert b"Acceso denegado" in get_response.data
+    assert post_response.status_code == 403
+
+
 def test_dashboard_admin_lists_adds_whitelist_entry_and_audits(
     tmp_path: Path,
 ) -> None:
@@ -256,22 +604,29 @@ def test_dashboard_admin_lists_adds_whitelist_entry_and_audits(
         dashboard_auth_enabled=True,
         dashboard_username="admin",
         dashboard_password="secret-password",
+        dashboard_role="admin",
     )
     app = create_app(config=config)
+    client = app.test_client()
+    auth_header = {"Authorization": _basic_auth("admin", "secret-password")}
+    csrf_token = _csrf_token(client, auth_header)
 
-    response = app.test_client().post(
+    response = client.post(
         "/admin/lists",
         data={
             "action": "whitelist_add",
+            "csrf_token": csrf_token,
             "ip": "192.168.1.20",
             "mac": "AA:BB:CC:DD:EE:20",
             "description": "Laptop laboratorio",
         },
-        headers={"Authorization": _basic_auth("admin", "secret-password")},
+        headers=auth_header,
+        environ_overrides={"REMOTE_ADDR": "192.168.10.70"},
     )
 
     entries = load_whitelist(config.whitelist_file)
     audit_events = _fetch_admin_audit_events(config.ids_db_path)
+    specific_events = _fetch_events(config.ids_db_path, ADMIN_WHITELIST_ADD)
 
     assert response.status_code == 200
     assert b"Whitelist entry added" in response.data
@@ -279,6 +634,11 @@ def test_dashboard_admin_lists_adds_whitelist_entry_and_audits(
     assert entries[0].mac == "aa:bb:cc:dd:ee:20"
     assert audit_events[-1].event_type == ADMIN_LIST_ACTION
     assert audit_events[-1].raw["action"] == "whitelist_add"
+    assert specific_events[-1].raw["user"] == "admin"
+    assert specific_events[-1].raw["action"] == "whitelist_add"
+    assert specific_events[-1].raw["remote_ip"] == "192.168.10.70"
+    assert specific_events[-1].raw["result"] == "success"
+    _assert_audit_event_has_no_secrets(specific_events[-1])
 
 
 def test_dashboard_admin_lists_rejects_duplicate_whitelist_entry(
@@ -289,24 +649,29 @@ def test_dashboard_admin_lists_rejects_duplicate_whitelist_entry(
         dashboard_auth_enabled=True,
         dashboard_username="admin",
         dashboard_password="secret-password",
+        dashboard_role="admin",
     )
     app = create_app(config=config)
+    client = app.test_client()
     auth_header = {"Authorization": _basic_auth("admin", "secret-password")}
+    csrf_token = _csrf_token(client, auth_header)
 
-    app.test_client().post(
+    client.post(
         "/admin/lists",
         data={
             "action": "whitelist_add",
+            "csrf_token": csrf_token,
             "ip": "192.168.1.20",
             "mac": "AA:BB:CC:DD:EE:20",
             "description": "Laptop laboratorio",
         },
         headers=auth_header,
     )
-    response = app.test_client().post(
+    response = client.post(
         "/admin/lists",
         data={
             "action": "whitelist_add",
+            "csrf_token": csrf_token,
             "ip": "192.168.1.20",
             "mac": "AA:BB:CC:DD:EE:21",
             "description": "Duplicado",
@@ -327,32 +692,42 @@ def test_dashboard_admin_lists_manages_blacklist_entries(tmp_path: Path) -> None
         dashboard_auth_enabled=True,
         dashboard_username="admin",
         dashboard_password="secret-password",
+        dashboard_role="admin",
     )
     app = create_app(config=config)
+    client = app.test_client()
     auth_header = {"Authorization": _basic_auth("admin", "secret-password")}
+    csrf_token = _csrf_token(client, auth_header)
 
-    add_response = app.test_client().post(
+    add_response = client.post(
         "/admin/lists",
         data={
             "action": "blacklist_add",
+            "csrf_token": csrf_token,
             "ip": "8.8.8.8",
             "reason": "IP externa reportada",
         },
         headers=auth_header,
     )
-    validate_response = app.test_client().post(
+    validate_response = client.post(
         "/admin/lists",
-        data={"action": "blacklist_validate"},
+        data={"action": "blacklist_validate", "csrf_token": csrf_token},
         headers=auth_header,
     )
-    remove_response = app.test_client().post(
+    remove_response = client.post(
         "/admin/lists",
-        data={"action": "blacklist_remove", "ip": "8.8.8.8"},
+        data={
+            "action": "blacklist_remove",
+            "csrf_token": csrf_token,
+            "ip": "8.8.8.8",
+        },
         headers=auth_header,
     )
 
     entries = list_blacklist_entries(config.blacklist_file)
     audit_events = _fetch_admin_audit_events(config.ids_db_path)
+    blacklist_add_events = _fetch_events(config.ids_db_path, ADMIN_BLACKLIST_ADD)
+    blacklist_remove_events = _fetch_events(config.ids_db_path, ADMIN_BLACKLIST_REMOVE)
 
     assert add_response.status_code == 200
     assert b"Blacklist entry added" in add_response.data
@@ -366,6 +741,168 @@ def test_dashboard_admin_lists_manages_blacklist_entries(tmp_path: Path) -> None
         "blacklist_validate",
         "blacklist_remove",
     }
+    assert blacklist_add_events[-1].raw["user"] == "admin"
+    assert blacklist_add_events[-1].raw["action"] == "blacklist_add"
+    assert blacklist_add_events[-1].raw["result"] == "success"
+    assert blacklist_remove_events[-1].raw["user"] == "admin"
+    assert blacklist_remove_events[-1].raw["action"] == "blacklist_remove"
+    assert blacklist_remove_events[-1].raw["result"] == "success"
+    _assert_audit_event_has_no_secrets(blacklist_add_events[-1])
+    _assert_audit_event_has_no_secrets(blacklist_remove_events[-1])
+
+
+def test_dashboard_admin_lists_records_whitelist_remove_audit(
+    tmp_path: Path,
+) -> None:
+    config = _config(
+        tmp_path / "events.db",
+        dashboard_auth_enabled=True,
+        dashboard_username="admin",
+        dashboard_password="secret-password",
+        dashboard_role="admin",
+    )
+    app = create_app(config=config)
+    client = app.test_client()
+    auth_header = {"Authorization": _basic_auth("admin", "secret-password")}
+    csrf_token = _csrf_token(client, auth_header)
+    client.post(
+        "/admin/lists",
+        data={
+            "action": "whitelist_add",
+            "csrf_token": csrf_token,
+            "ip": "192.168.1.25",
+            "mac": "AA:BB:CC:DD:EE:25",
+            "description": "Temporal",
+        },
+        headers=auth_header,
+    )
+
+    response = client.post(
+        "/admin/lists",
+        data={
+            "action": "whitelist_remove",
+            "csrf_token": csrf_token,
+            "ip": "192.168.1.25",
+        },
+        headers=auth_header,
+        environ_overrides={"REMOTE_ADDR": "192.168.10.80"},
+    )
+    remove_events = _fetch_events(config.ids_db_path, ADMIN_WHITELIST_REMOVE)
+
+    assert response.status_code == 200
+    assert remove_events[-1].raw["user"] == "admin"
+    assert remove_events[-1].raw["action"] == "whitelist_remove"
+    assert remove_events[-1].raw["remote_ip"] == "192.168.10.80"
+    assert remove_events[-1].raw["result"] == "success"
+    _assert_audit_event_has_no_secrets(remove_events[-1])
+
+
+def test_dashboard_admin_lists_rejects_missing_csrf_token(tmp_path: Path) -> None:
+    app = create_app(
+        config=_config(
+            tmp_path / "events.db",
+            dashboard_auth_enabled=True,
+            dashboard_username="admin",
+            dashboard_password="secret-password",
+            dashboard_role="admin",
+        )
+    )
+    client = app.test_client()
+    auth_header = {"Authorization": _basic_auth("admin", "secret-password")}
+    client.get("/admin/lists", headers=auth_header)
+
+    response = client.post(
+        "/admin/lists",
+        data={
+            "action": "whitelist_add",
+            "ip": "192.168.1.30",
+            "mac": "AA:BB:CC:DD:EE:30",
+            "description": "Sin token",
+        },
+        headers=auth_header,
+    )
+
+    assert response.status_code == 400
+    assert b"CSRF" in response.data
+
+
+def test_dashboard_admin_lists_rejects_invalid_csrf_token(tmp_path: Path) -> None:
+    app = create_app(
+        config=_config(
+            tmp_path / "events.db",
+            dashboard_auth_enabled=True,
+            dashboard_username="admin",
+            dashboard_password="secret-password",
+            dashboard_role="admin",
+        )
+    )
+    client = app.test_client()
+    auth_header = {"Authorization": _basic_auth("admin", "secret-password")}
+    _csrf_token(client, auth_header)
+
+    response = client.post(
+        "/admin/lists",
+        data={
+            "action": "blacklist_add",
+            "csrf_token": "invalid-token",
+            "ip": "8.8.8.8",
+            "reason": "Token invalido",
+        },
+        headers=auth_header,
+    )
+
+    assert response.status_code == 400
+    assert b"CSRF" in response.data
+
+
+def test_dashboard_read_only_routes_do_not_require_csrf(tmp_path: Path) -> None:
+    app = create_app(
+        config=_config(
+            tmp_path / "events.db",
+            dashboard_auth_enabled=True,
+            dashboard_username="admin",
+            dashboard_password="secret-password",
+            dashboard_role="admin",
+        )
+    )
+    client = app.test_client()
+    auth_header = {"Authorization": _basic_auth("admin", "secret-password")}
+
+    assert client.get("/", headers=auth_header).status_code == 200
+    assert client.get("/health", headers=auth_header).status_code == 200
+    assert client.get("/events", headers=auth_header).status_code == 200
+
+
+def test_dashboard_optional_admin_credentials_can_manage_lists(tmp_path: Path) -> None:
+    config = _config(
+        tmp_path / "events.db",
+        dashboard_auth_enabled=True,
+        dashboard_username="viewer",
+        dashboard_password="viewer-password",
+        dashboard_role="viewer",
+        dashboard_admin_username="admin",
+        dashboard_admin_password="admin-password",
+    )
+    app = create_app(config=config)
+    client = app.test_client()
+    viewer_header = {"Authorization": _basic_auth("viewer", "viewer-password")}
+    admin_header = {"Authorization": _basic_auth("admin", "admin-password")}
+
+    assert client.get("/admin/lists", headers=viewer_header).status_code == 403
+    csrf_token = _csrf_token(client, admin_header)
+    response = client.post(
+        "/admin/lists",
+        data={
+            "action": "blacklist_add",
+            "csrf_token": csrf_token,
+            "ip": "8.8.4.4",
+            "reason": "Admin separado",
+        },
+        headers=admin_header,
+    )
+
+    assert response.status_code == 200
+    assert list_blacklist_entries(config.blacklist_file)[0].ip == "8.8.4.4"
 
 
 def _config(
@@ -374,6 +911,12 @@ def _config(
     dashboard_auth_enabled: bool = False,
     dashboard_username: str | None = None,
     dashboard_password: str | None = None,
+    dashboard_role: str = "viewer",
+    dashboard_admin_username: str | None = None,
+    dashboard_admin_password: str | None = None,
+    dashboard_secret_key: str | None = "test-dashboard-secret-key",
+    dashboard_session_cookie_secure: bool = False,
+    dashboard_session_timeout_minutes: int = 30,
 ) -> SimpleNamespace:
     root = db_path.parent
     return SimpleNamespace(
@@ -384,12 +927,64 @@ def _config(
         dashboard_auth_enabled=dashboard_auth_enabled,
         dashboard_username=dashboard_username,
         dashboard_password=dashboard_password,
+        dashboard_role=dashboard_role,
+        dashboard_admin_username=dashboard_admin_username,
+        dashboard_admin_password=dashboard_admin_password,
+        dashboard_secret_key=dashboard_secret_key,
+        dashboard_session_cookie_secure=dashboard_session_cookie_secure,
+        dashboard_session_timeout_minutes=dashboard_session_timeout_minutes,
     )
 
 
 def _basic_auth(username: str, password: str) -> str:
     token = base64.b64encode(f"{username}:{password}".encode("utf-8")).decode("ascii")
     return f"Basic {token}"
+
+
+def _csrf_token(client, auth_header: dict[str, str]) -> str:
+    response = client.get("/admin/lists", headers=auth_header)
+    assert response.status_code == 200
+    match = re.search(
+        rb'name="csrf_token" value="([^"]+)"',
+        response.data,
+    )
+    assert match is not None
+    return match.group(1).decode("utf-8")
+
+
+def _assert_common_security_headers(response) -> None:
+    assert response.headers["X-Content-Type-Options"] == "nosniff"
+    assert response.headers["X-Frame-Options"] == "DENY"
+    assert response.headers["Referrer-Policy"] == "no-referrer"
+    assert (
+        response.headers["Content-Security-Policy"]
+        == DASHBOARD_CONTENT_SECURITY_POLICY
+    )
+
+
+def _assert_no_store_headers(response) -> None:
+    assert response.headers["Cache-Control"] == "no-store"
+    assert response.headers["Pragma"] == "no-cache"
+    assert response.headers["Expires"] == "0"
+
+
+def _assert_audit_event_has_no_secrets(event) -> None:
+    raw_text = event.raw_json
+    assert "secret-password" not in raw_text
+    assert "viewer-password" not in raw_text
+    assert "wrong-password" not in raw_text
+    assert "csrf_token" not in raw_text
+    assert "gleipnir_csrf_token" not in raw_text
+    assert "password" not in raw_text.lower()
+    assert "token" not in raw_text.lower()
+
+
+def _fetch_events(db_path: Path, event_type: str):
+    store = SQLiteEventStore(db_path)
+    try:
+        return store.fetch_events(event_type)
+    finally:
+        store.close()
 
 
 def _fetch_admin_audit_events(db_path: Path):
