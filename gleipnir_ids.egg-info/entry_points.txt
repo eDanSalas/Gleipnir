@@ -1,0 +1,2 @@
+[console_scripts]
+gleipnir = src.cli:main

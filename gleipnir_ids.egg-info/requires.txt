@@ -1,0 +1,11 @@
+python-dotenv
+scapy
+requests
+python-whois
+netaddr
+python-json-logger
+Flask
+
+[test]
+pytest
+pip-audit

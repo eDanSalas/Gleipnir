@@ -1,0 +1,26 @@
+# Configuration
+python-dotenv
+
+# Packet capture
+scapy
+
+# HTTP queries for threat intelligence APIs
+requests
+
+# Whois
+python-whois
+
+# IP and network validation
+netaddr
+
+# Structured logs
+python-json-logger
+
+# Local web dashboard
+Flask
+
+# Tests
+pytest
+
+# Dependency security review
+pip-audit

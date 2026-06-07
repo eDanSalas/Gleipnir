@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gleipnir-ids"
+version = "0.1.0"
+description = "Gleipnir IDS institucional defensivo y educativo."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "python-dotenv",
+    "scapy",
+    "requests",
+    "python-whois",
+    "netaddr",
+    "python-json-logger",
+    "Flask",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest",
+    "pip-audit",
+]
+
+[project.scripts]
+gleipnir = "src.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*"]

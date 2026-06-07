@@ -1,0 +1,18 @@
+[Unit]
+Description=Gleipnir IDS live capture service
+Documentation=file:/opt/gleipnir/docs/systemd_service.md
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/gleipnir
+EnvironmentFile=/opt/gleipnir/.env
+ExecStart=/opt/gleipnir/.venv/bin/gleipnir live --interface <INTERFAZ> --forever
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
