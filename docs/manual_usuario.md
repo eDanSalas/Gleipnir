@@ -60,6 +60,46 @@ Directorios esperados:
 mkdir -p data logs logs/reports
 ```
 
+Archivos base recomendados para una instalacion nueva:
+
+```bash
+touch data/blacklist.txt
+echo "ip,mac,description" > data/whitelist.csv
+echo "[ ]" > data/dashboard_users.json
+touch data/gleipnir_events.db
+chmod 600 data/dashboard_users.json
+chmod 600 data/gleipnir_events.db
+```
+
+Significado de cada archivo:
+
+- `data/blacklist.txt`: lista negra local. Puede iniciar vacia; despues cada
+  linea debe contener una IP externa.
+- `data/whitelist.csv`: lista blanca local. El encabezado correcto es
+  `ip,mac,description`.
+- `ip`: direccion IPv4 o IPv6 autorizada.
+- `mac`: direccion MAC autorizada asociada al equipo.
+- `description`: descripcion humana del equipo, por ejemplo area, propietario o
+  ubicacion.
+- `data/dashboard_users.json`: archivo local de cuentas del dashboard. `[ ]`
+  es un arreglo JSON vacio; `gleipnir user create` lo actualiza con usuarios y
+  `password_hash`.
+- `data/gleipnir_events.db`: base SQLite local. Gleipnir crea las tablas cuando
+  se inicializa el almacenamiento.
+
+Despues de editar `.env` y crear los archivos base:
+
+```bash
+gleipnir user create --username admin --role admin
+gleipnir test-config
+gleipnir status
+```
+
+`gleipnir user create` pide la contrasena de forma interactiva con `getpass` y
+no la muestra en pantalla. `gleipnir test-config` y `gleipnir status` deben
+ejecutarse despues de completar `.env`; si SMTP, API keys o interfaz no estan
+definidos para el entorno, el comando mostrara advertencias o errores claros.
+
 ## 4. Configuracion con .env
 
 Copiar la plantilla en el equipo donde se ejecutara Gleipnir:

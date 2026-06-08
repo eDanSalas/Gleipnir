@@ -48,17 +48,33 @@ gleipnir --help
 cp .env.example .env
 chmod 600 .env
 mkdir -p data logs logs/reports
-touch data/whitelist.csv
 touch data/blacklist.txt
-touch data/dashboard_users.json
+echo "ip,mac,description" > data/whitelist.csv
+echo "[ ]" > data/dashboard_users.json
 touch data/gleipnir_events.db
 chmod 600 data/dashboard_users.json
-gleipnir status #Debe aparecer todo en OK
+chmod 600 data/gleipnir_events.db
 gleipnir user create --username admin --role admin
+gleipnir test-config
+gleipnir status
 ```
 
 Editar `.env` antes de ejecutar el IDS. No guardar credenciales reales en el
-repositorio.
+repositorio. `gleipnir test-config` y `gleipnir status` deben ejecutarse despues
+de completar `.env`; si SMTP, API keys o interfaz no estan definidos para el
+entorno, el estado puede mostrar advertencias o errores claros.
+
+Archivos base creados:
+
+- `data/blacklist.txt`: TXT de lista negra; puede iniciar vacio. Cada linea
+  posterior debe contener una IP externa.
+- `data/whitelist.csv`: CSV de lista blanca. Las columnas obligatorias son
+  `ip`, `mac` y `description`.
+- `data/dashboard_users.json`: JSON local de usuarios del dashboard. `[ ]`
+  significa arreglo vacio; despues `gleipnir user create` agrega usuarios con
+  `password_hash`.
+- `data/gleipnir_events.db`: base SQLite local. Gleipnir crea las tablas cuando
+  el almacenamiento se inicializa.
 
 Variables operativas principales:
 
@@ -407,7 +423,7 @@ OK      | configuration | Configuration loaded successfully.
 OK      | whitelist     | File exists: data/whitelist.csv
 OK      | blacklist     | File exists: data/blacklist.txt
 OK      | log_dir       | Directory is writable: logs
-WARNING | sqlite        | Database does not exist yet: data/gleipnir_events.db
+OK      | sqlite        | Database is accessible: data/gleipnir_events.db
 OK      | smtp          | SMTP endpoint is reachable: smtp.example.org:587
 OK      | interface     | Configured interface is available: wlan0
 ```
