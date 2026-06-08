@@ -87,6 +87,9 @@ Variables operativas principales:
 - `ALERT_MAX_PER_MINUTE=5`
 - `GLEIPNIR_INTERFACE=`: interfaz esperada para validacion con `gleipnir status`.
 - `GLEIPNIR_MODE=live`: modo operativo esperado para despliegue.
+- `GLEIPNIR_SCAPY_USE_PCAP=false`: usar `true` solo si la captura live requiere
+  el backend libpcap de Scapy, por ejemplo cuando los paquetes llegan como
+  `Raw`.
 - `HEALTH_LOG_INTERVAL_SECONDS=300`: intervalo de logs periodicos en modo
   `live --forever`.
 - `EVENT_RETENTION_DAYS=30`: dias de eventos SQLite que se conservan.
@@ -118,6 +121,7 @@ Ejemplo:
 
 ```bash
 sudo gleipnir live --interface wlan0
+sudo gleipnir live --interface wlan0 --debug-packets --packet-count 20
 ```
 
 Para ejecucion continua:
@@ -129,6 +133,29 @@ sudo gleipnir live --interface wlan0 --forever
 `--forever` ejecuta ciclos supervisados de captura, reintenta errores
 recuperables, mantiene contadores acumulados y emite logs periodicos
 `LIVE_CAPTURE_HEALTH` segun `HEALTH_LOG_INTERVAL_SECONDS`.
+
+Si Scapy recibe paquetes como `Raw`, probar el backend libpcap:
+
+```bash
+sudo gleipnir live --interface ens33 --debug-packets --packet-count 20 --use-pcap
+```
+
+Tambien puede activarse con `GLEIPNIR_SCAPY_USE_PCAP=true` en `.env`.
+En Ubuntu instalar primero:
+
+```bash
+sudo apt install -y libpcap-dev tcpdump
+```
+
+Para confirmar que la interfaz observa trafico antes de probar Gleipnir:
+
+```bash
+sudo tcpdump -i ens33 -c 10 -nn
+```
+
+Con `--debug-packets`, Gleipnir muestra `summary`, capas detectadas, clase del
+paquete, si llego como `Raw`, primeros 32 bytes en hexadecimal y si pudo
+decodificarlo como Ethernet, IPv4 o IPv6. No imprime payloads completos.
 
 ## Servicio systemd
 
@@ -522,3 +549,5 @@ gleipnir blacklist validate
   Nginx o Caddy como reverse proxy.
 - `docs/security.md`: medidas de seguridad del dashboard, riesgos mitigados y
   checklist de despliegue seguro.
+- `docs/troubleshooting.md`: diagnosticos puntuales, incluido el caso en que
+  Scapy entrega paquetes live como `Raw`.

@@ -116,6 +116,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Print one safe diagnostic summary per captured packet.",
     )
+    live.add_argument(
+        "--use-pcap",
+        action="store_true",
+        help="Use Scapy's libpcap backend when available.",
+    )
     live.set_defaults(handler=_handle_live)
 
     report = subparsers.add_parser(
@@ -381,6 +386,7 @@ def _handle_replay(args: argparse.Namespace, stdout: TextIO, _stderr: TextIO) ->
 
 def _handle_live(args: argparse.Namespace, stdout: TextIO, _stderr: TextIO) -> int:
     engine = _create_engine()
+    use_pcap = _live_use_pcap_enabled(args, getattr(engine, "config", None))
     try:
         if args.forever:
             result = start_live_capture_forever(
@@ -390,6 +396,7 @@ def _handle_live(args: argparse.Namespace, stdout: TextIO, _stderr: TextIO) -> i
                 packet_processor=_engine_packet_processor(engine),
                 debug_packets=args.debug_packets,
                 debug_output=lambda message: print(message, file=stdout),
+                use_pcap=use_pcap,
                 health_log_interval_seconds=engine.config.health_log_interval_seconds,
             )
         else:
@@ -400,6 +407,7 @@ def _handle_live(args: argparse.Namespace, stdout: TextIO, _stderr: TextIO) -> i
                 packet_processor=_engine_packet_processor(engine),
                 debug_packets=args.debug_packets,
                 debug_output=lambda message: print(message, file=stdout),
+                use_pcap=use_pcap,
             )
     finally:
         engine.shutdown()
@@ -409,6 +417,8 @@ def _handle_live(args: argparse.Namespace, stdout: TextIO, _stderr: TextIO) -> i
             "Live capture forever stopped: "
             f"cycles={result.capture_cycles} "
             f"received={result.packets_received} "
+            f"raw_packets={result.raw_packets} "
+            f"decoded_from_raw={result.decoded_from_raw} "
             f"ignored_packets={result.ignored_packets} "
             f"unsupported_packets={result.unsupported_packets} "
             f"parse_errors={result.parse_errors} "
@@ -424,6 +434,8 @@ def _handle_live(args: argparse.Namespace, stdout: TextIO, _stderr: TextIO) -> i
     print(
         "Live capture complete: "
         f"received={result.packets_received} "
+        f"raw_packets={result.raw_packets} "
+        f"decoded_from_raw={result.decoded_from_raw} "
         f"ignored_packets={result.ignored_packets} "
         f"unsupported_packets={result.unsupported_packets} "
         f"parse_errors={result.parse_errors} "
@@ -435,6 +447,19 @@ def _handle_live(args: argparse.Namespace, stdout: TextIO, _stderr: TextIO) -> i
         file=stdout,
     )
     return 0
+
+
+def _live_use_pcap_enabled(args: argparse.Namespace, config: Any) -> bool:
+    if bool(getattr(args, "use_pcap", False)):
+        return True
+
+    value = getattr(config, "gleipnir_scapy_use_pcap", False)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "y", "on"}
+
+    return False
 
 
 def _handle_report(args: argparse.Namespace, stdout: TextIO, _stderr: TextIO) -> int:

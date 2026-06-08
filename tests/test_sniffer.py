@@ -231,7 +231,7 @@ class SnifferTests(unittest.TestCase):
 
     def test_parse_ethernet_frame_rejects_unsupported_ethertype(self) -> None:
         frame = (
-            bytes.fromhex("001122334455aabbccddeeff0806")
+            bytes.fromhex("001122334455aabbccddeeff1234")
             + b"\x00" * 28
         )
 

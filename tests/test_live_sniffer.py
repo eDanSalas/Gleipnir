@@ -45,6 +45,8 @@ class LiveSnifferTests(unittest.TestCase):
         self.assertEqual(sniff_options["timeout"], 5.0)
         self.assertFalse(sniff_options["store"])
         self.assertEqual(result.packets_received, 2)
+        self.assertEqual(result.raw_packets, 0)
+        self.assertEqual(result.decoded_from_raw, 0)
         self.assertEqual(result.packet_events_processed, 2)
         self.assertEqual(result.detection_events_processed, 2)
         self.assertEqual(detector.call_count, 2)
@@ -135,6 +137,8 @@ class LiveSnifferTests(unittest.TestCase):
         )
 
         self.assertEqual(result.packets_received, 3)
+        self.assertEqual(result.raw_packets, 0)
+        self.assertEqual(result.decoded_from_raw, 0)
         self.assertEqual(result.ignored_packets, 1)
         self.assertEqual(result.unsupported_packets, 1)
         self.assertEqual(result.parse_errors, 1)
@@ -216,8 +220,125 @@ class LiveSnifferTests(unittest.TestCase):
         self.assertEqual(result.packet_events_processed, 1)
         self.assertEqual(len(debug_lines), 1)
         self.assertIn("DEBUG_PACKET", debug_lines[0])
+        self.assertIn("packet_class=Ether", debug_lines[0])
+        self.assertIn("raw=no", debug_lines[0])
+        self.assertIn("first_bytes_hex=", debug_lines[0])
         self.assertIn("packet_event=yes", debug_lines[0])
         self.assertIn("link_layer=ethernet", debug_lines[0])
+
+    def test_parse_packet_decodes_raw_scapy_payloads(self) -> None:
+        scapy = _load_scapy_or_skip(self)
+
+        raw_ether = parse_packet(
+            scapy.Raw(
+                load=bytes(
+                    scapy.Ether(
+                        src="aa:bb:cc:dd:ee:ff",
+                        dst="66:55:44:33:22:11",
+                    )
+                    / scapy.IP(src="192.168.1.10", dst="8.8.8.8")
+                    / scapy.TCP()
+                )
+            )
+        )
+        raw_ipv4 = parse_packet(
+            scapy.Raw(load=bytes(scapy.IP(src="192.168.1.20", dst="1.1.1.1") / scapy.TCP()))
+        )
+        raw_ipv6 = parse_packet(
+            scapy.Raw(
+                load=bytes(
+                    scapy.IPv6(src="2001:db8::1", dst="2001:db8::2")
+                    / scapy.TCP()
+                )
+            )
+        )
+
+        self.assertEqual(raw_ether.link_layer_type, LINK_LAYER_ETHERNET)
+        self.assertEqual(raw_ether.mac_origen, "aa:bb:cc:dd:ee:ff")
+        self.assertEqual(raw_ether.protocolo, "TCP")
+        self.assertEqual(raw_ipv4.link_layer_type, LINK_LAYER_RAW_IP)
+        self.assertEqual(raw_ipv4.mac_origen, None)
+        self.assertEqual(raw_ipv4.ip_origen, "192.168.1.20")
+        self.assertEqual(raw_ipv6.link_layer_type, LINK_LAYER_RAW_IP)
+        self.assertEqual(raw_ipv6.mac_destino, None)
+        self.assertEqual(raw_ipv6.ip_origen, "2001:db8::1")
+
+    def test_start_live_capture_counts_raw_invalid_as_unsupported(self) -> None:
+        scapy = _load_scapy_or_skip(self)
+        debug_lines: list[str] = []
+
+        result = start_live_capture(
+            "eth0",
+            scapy_sniff=_sniff_that_replays([scapy.Raw(load=b"\x00\x01")]),
+            debug_packets=True,
+            debug_output=debug_lines.append,
+        )
+
+        self.assertEqual(result.packets_received, 1)
+        self.assertEqual(result.raw_packets, 1)
+        self.assertEqual(result.decoded_from_raw, 0)
+        self.assertEqual(result.unsupported_packets, 1)
+        self.assertEqual(result.parse_errors, 0)
+        self.assertEqual(result.packet_events_processed, 0)
+        self.assertEqual(result.errors, 1)
+        self.assertIn("raw=yes", debug_lines[0])
+        self.assertIn("packet_event=no", debug_lines[0])
+        self.assertIn("decoded_as=no", debug_lines[0])
+
+    def test_start_live_capture_counts_raw_decoded_packets(self) -> None:
+        scapy = _load_scapy_or_skip(self)
+        raw_packet = scapy.Raw(
+            load=bytes(scapy.IP(src="192.168.1.20", dst="8.8.8.8") / scapy.TCP())
+        )
+        debug_lines: list[str] = []
+
+        result = start_live_capture(
+            "eth0",
+            packet_processor=Mock(
+                return_value=SimpleProcessingResult(
+                    detection_event=None,
+                    dns_http_events=(),
+                )
+            ),
+            scapy_sniff=_sniff_that_replays([raw_packet]),
+            debug_packets=True,
+            debug_output=debug_lines.append,
+        )
+
+        self.assertEqual(result.raw_packets, 1)
+        self.assertEqual(result.decoded_from_raw, 1)
+        self.assertEqual(result.packet_events_processed, 1)
+        self.assertEqual(result.errors, 0)
+        self.assertIn("raw=yes", debug_lines[0])
+        self.assertIn("decoded_as=IP", debug_lines[0])
+        self.assertIn("link_layer=raw_ip", debug_lines[0])
+
+    def test_start_live_capture_prepares_libpcap_backend_when_requested(self) -> None:
+        sniff = _sniff_that_replays([_synthetic_packet("192.168.1.70")])
+
+        with patch("src.sniffer._prepare_scapy_backend") as backend:
+            result = start_live_capture(
+                "eth0",
+                packet_processor=Mock(
+                    return_value=SimpleProcessingResult(
+                        detection_event=None,
+                        dns_http_events=(),
+                    )
+                ),
+                scapy_sniff=sniff,
+                use_pcap=True,
+            )
+
+        backend.assert_called_once_with("eth0", use_pcap=True)
+        self.assertEqual(result.packet_events_processed, 1)
+
+    def test_start_live_capture_reports_libpcap_unavailable(self) -> None:
+        with patch(
+            "src.sniffer._prepare_scapy_backend",
+            side_effect=SnifferError("Scapy libpcap backend is not available"),
+        ):
+            with self.assertRaisesRegex(SnifferError, "libpcap"):
+                start_live_capture("eth0", scapy_sniff=Mock(), use_pcap=True)
 
     def test_start_live_capture_rejects_invalid_arguments(self) -> None:
         with self.assertRaisesRegex(SnifferError, "interface"):
@@ -273,6 +394,8 @@ class LiveSnifferTests(unittest.TestCase):
 
         self.assertEqual(result.capture_cycles, 1)
         self.assertEqual(result.packets_received, 1)
+        self.assertEqual(result.raw_packets, 0)
+        self.assertEqual(result.decoded_from_raw, 0)
         self.assertEqual(result.packet_events_processed, 1)
         self.assertEqual(result.detection_events_processed, 1)
         self.assertEqual(result.errors, 1)
@@ -531,6 +654,7 @@ def _load_scapy_or_skip(test_case: unittest.TestCase) -> SimpleNamespace:
         from scapy.layers.inet import IP, TCP, UDP
         from scapy.layers.inet6 import IPv6
         from scapy.layers.l2 import ARP, Ether
+        from scapy.packet import Raw
         from scapy.layers import l2
     except ImportError as exc:
         test_case.skipTest(f"Scapy is not available: {exc}")
@@ -542,6 +666,7 @@ def _load_scapy_or_skip(test_case: unittest.TestCase) -> SimpleNamespace:
         Ether=Ether,
         IP=IP,
         IPv6=IPv6,
+        Raw=Raw,
         TCP=TCP,
         UDP=UDP,
         CookedLinux=getattr(l2, "CookedLinux", None),

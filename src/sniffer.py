@@ -21,8 +21,10 @@ ETHERNET_LINKTYPE = 1
 ETHERNET_HEADER_LENGTH = 14
 VLAN_TAG_LENGTH = 4
 ETHERTYPE_IPV4 = 0x0800
+ETHERTYPE_ARP = 0x0806
 ETHERTYPE_IPV6 = 0x86DD
 ETHERTYPE_VLAN = {0x8100, 0x88A8}
+ARP_HEADER_MIN_LENGTH = 28
 LIVE_CAPTURE_FILTER = "arp or ip or ip6"
 DEFAULT_FOREVER_RETRY_SECONDS = 5.0
 DEFAULT_FOREVER_RESTART_SLEEP_SECONDS = 1.0
@@ -80,6 +82,8 @@ class LiveCaptureResult:
     """Summary of a completed live capture session."""
 
     packets_received: int
+    raw_packets: int
+    decoded_from_raw: int
     ignored_packets: int
     unsupported_packets: int
     parse_errors: int
@@ -96,6 +100,8 @@ class LiveCaptureForeverResult:
 
     capture_cycles: int
     packets_received: int
+    raw_packets: int
+    decoded_from_raw: int
     ignored_packets: int
     unsupported_packets: int
     parse_errors: int
@@ -160,6 +166,7 @@ def start_live_capture(
     scapy_sniff: ScapySniff | None = None,
     debug_packets: bool = False,
     debug_output: Callable[[str], Any] | None = None,
+    use_pcap: bool = False,
 ) -> LiveCaptureResult:
     """Capture live packets with Scapy and process them defensively.
 
@@ -169,6 +176,7 @@ def start_live_capture(
     capture_interface = _validate_interface(interface)
     count = _validate_packet_count(packet_count)
     capture_timeout = _validate_timeout(timeout)
+    _prepare_scapy_backend(capture_interface, use_pcap=use_pcap)
     sniff = scapy_sniff or _load_scapy_sniff()
     detect = (
         None
@@ -182,6 +190,8 @@ def start_live_capture(
     )
 
     packets_received = 0
+    raw_packets = 0
+    decoded_from_raw = 0
     ignored_packets = 0
     unsupported_packets = 0
     parse_errors = 0
@@ -194,6 +204,8 @@ def start_live_capture(
 
     def handle_packet(packet: Any) -> None:
         nonlocal packets_received
+        nonlocal raw_packets
+        nonlocal decoded_from_raw
         nonlocal ignored_packets
         nonlocal unsupported_packets
         nonlocal parse_errors
@@ -205,10 +217,15 @@ def start_live_capture(
         nonlocal mac_unavailable_logs_emitted
 
         packets_received += 1
+        raw_packet = _packet_is_raw_only(packet)
+        if raw_packet:
+            raw_packets += 1
 
         try:
             packet_event = parse_packet(packet)
             packet_events_processed += 1
+            if raw_packet:
+                decoded_from_raw += 1
             if packet_event.mac_origen is None or packet_event.mac_destino is None:
                 mac_unavailable_logs_emitted = _log_mac_unavailable_if_sampled(
                     packet,
@@ -361,6 +378,8 @@ def start_live_capture(
 
     return LiveCaptureResult(
         packets_received=packets_received,
+        raw_packets=raw_packets,
+        decoded_from_raw=decoded_from_raw,
         ignored_packets=ignored_packets,
         unsupported_packets=unsupported_packets,
         parse_errors=parse_errors,
@@ -383,6 +402,7 @@ def start_live_capture_forever(
     scapy_sniff: ScapySniff | None = None,
     debug_packets: bool = False,
     debug_output: Callable[[str], Any] | None = None,
+    use_pcap: bool = False,
     health_log_interval_seconds: int = DEFAULT_HEALTH_LOG_INTERVAL_SECONDS,
     retry_seconds: float = DEFAULT_FOREVER_RETRY_SECONDS,
     restart_sleep_seconds: float = DEFAULT_FOREVER_RESTART_SLEEP_SECONDS,
@@ -415,6 +435,8 @@ def start_live_capture_forever(
     totals = {
         "capture_cycles": 0,
         "packets_received": 0,
+        "raw_packets": 0,
+        "decoded_from_raw": 0,
         "ignored_packets": 0,
         "unsupported_packets": 0,
         "parse_errors": 0,
@@ -444,6 +466,7 @@ def start_live_capture_forever(
                 scapy_sniff=scapy_sniff,
                 debug_packets=debug_packets,
                 debug_output=debug_output,
+                use_pcap=use_pcap,
             )
         except SnifferError as exc:
             totals["errors"] += 1
@@ -465,6 +488,8 @@ def start_live_capture_forever(
 
         totals["capture_cycles"] += 1
         totals["packets_received"] += result.packets_received
+        totals["raw_packets"] += result.raw_packets
+        totals["decoded_from_raw"] += result.decoded_from_raw
         totals["ignored_packets"] += result.ignored_packets
         totals["unsupported_packets"] += result.unsupported_packets
         totals["parse_errors"] += result.parse_errors
@@ -532,6 +557,8 @@ def _parse_ethernet_frame(frame: bytes, timestamp: float | None = None) -> Packe
 
     if ethertype == ETHERTYPE_IPV4:
         ip_origen, ip_destino, protocolo = _parse_ipv4(frame[payload_offset:])
+    elif ethertype == ETHERTYPE_ARP:
+        ip_origen, ip_destino, protocolo = _parse_arp(frame[payload_offset:])
     elif ethertype == ETHERTYPE_IPV6:
         ip_origen, ip_destino, protocolo = _parse_ipv6(frame[payload_offset:])
     else:
@@ -559,6 +586,7 @@ def _parse_scapy_packet(packet: Any) -> PacketEvent:
         ) from exc
 
     ether_layer = _get_scapy_layer(packet, layers["Ether"])
+    raw_layer = _get_scapy_layer(packet, layers.get("Raw"))
     arp_layer = (
         _get_scapy_layer(packet, layers["ARP"]) if "ARP" in layers else None
     )
@@ -576,6 +604,8 @@ def _parse_scapy_packet(packet: Any) -> PacketEvent:
     )
 
     if arp_layer is None and ip_layer is None and ipv6_layer is None:
+        if raw_layer is not None and _packet_is_raw_only(packet):
+            return _parse_scapy_raw_packet(packet, raw_layer)
         raise IgnoredPacketError("Scapy packet does not contain ARP, IPv4, or IPv6")
 
     if arp_layer is not None:
@@ -655,6 +685,34 @@ def _parse_ipv4(payload: bytes) -> tuple[str, str, str]:
     return ip_origen, ip_destino, protocolo
 
 
+def _parse_arp(payload: bytes) -> tuple[str, str, str]:
+    if len(payload) < ARP_HEADER_MIN_LENGTH:
+        raise SnifferError("ARP packet is too short")
+
+    hardware_type = int.from_bytes(payload[0:2], byteorder="big")
+    protocol_type = int.from_bytes(payload[2:4], byteorder="big")
+    hardware_length = payload[4]
+    protocol_length = payload[5]
+
+    if (
+        hardware_type != 1
+        or protocol_type != ETHERTYPE_IPV4
+        or hardware_length != 6
+        or protocol_length != 4
+    ):
+        raise UnsupportedPacketError("Unsupported ARP header format")
+
+    sender_ip_offset = 8 + hardware_length
+    target_ip_offset = sender_ip_offset + protocol_length + hardware_length
+    if len(payload) < target_ip_offset + protocol_length:
+        raise SnifferError("ARP packet is truncated")
+
+    ip_origen = str(ipaddress.IPv4Address(payload[sender_ip_offset : sender_ip_offset + 4]))
+    ip_destino = str(ipaddress.IPv4Address(payload[target_ip_offset : target_ip_offset + 4]))
+
+    return ip_origen, ip_destino, "ARP"
+
+
 def _parse_ipv6(payload: bytes) -> tuple[str, str, str]:
     if len(payload) < 40:
         raise SnifferError("IPv6 packet is too short")
@@ -668,6 +726,60 @@ def _parse_ipv6(payload: bytes) -> tuple[str, str, str]:
     ip_destino = str(ipaddress.IPv6Address(payload[24:40]))
 
     return ip_origen, ip_destino, protocolo
+
+
+def _parse_scapy_raw_packet(packet: Any, raw_layer: Any) -> PacketEvent:
+    raw_bytes = _scapy_raw_payload_bytes(packet, raw_layer)
+    if not raw_bytes:
+        raise UnsupportedPacketError("Raw packet does not contain decodable bytes")
+
+    timestamp = _normalize_timestamp(getattr(packet, "time", 0.0))
+    parsers: tuple[tuple[str, Callable[[], PacketEvent]], ...] = (
+        ("Ethernet", lambda: _parse_ethernet_frame(raw_bytes, timestamp=timestamp)),
+        ("IPv4", lambda: _parse_raw_ipv4_packet(raw_bytes, timestamp=timestamp)),
+        ("IPv6", lambda: _parse_raw_ipv6_packet(raw_bytes, timestamp=timestamp)),
+    )
+    decode_errors: list[str] = []
+
+    for decoder_name, decoder in parsers:
+        try:
+            return decoder()
+        except SnifferError as exc:
+            decode_errors.append(f"{decoder_name}: {exc}")
+
+    _LOGGER.debug(
+        "LIVE_CAPTURE | raw_decode_failed | attempts=%s",
+        "; ".join(decode_errors),
+    )
+    raise UnsupportedPacketError(
+        "Raw packet could not be decoded as Ethernet, IPv4, or IPv6"
+    )
+
+
+def _parse_raw_ipv4_packet(payload: bytes, *, timestamp: float) -> PacketEvent:
+    ip_origen, ip_destino, protocolo = _parse_ipv4(payload)
+    return PacketEvent(
+        timestamp=timestamp,
+        mac_origen=None,
+        mac_destino=None,
+        ip_origen=ip_origen,
+        ip_destino=ip_destino,
+        protocolo=protocolo,
+        link_layer_type=LINK_LAYER_RAW_IP,
+    )
+
+
+def _parse_raw_ipv6_packet(payload: bytes, *, timestamp: float) -> PacketEvent:
+    ip_origen, ip_destino, protocolo = _parse_ipv6(payload)
+    return PacketEvent(
+        timestamp=timestamp,
+        mac_origen=None,
+        mac_destino=None,
+        ip_origen=ip_origen,
+        ip_destino=ip_destino,
+        protocolo=protocolo,
+        link_layer_type=LINK_LAYER_RAW_IP,
+    )
 
 
 def _protocol_name(protocol_number: int) -> str:
@@ -798,12 +910,19 @@ def _format_mac(raw_mac: bytes) -> str:
 
 
 def _load_scapy_layers() -> dict[str, Any]:
+    from scapy.packet import Raw
     from scapy.layers.inet import IP
     from scapy.layers.inet6 import IPv6
     from scapy.layers import l2
     from scapy.layers.l2 import ARP, Ether
 
-    layers: dict[str, Any] = {"Ether": Ether, "ARP": ARP, "IP": IP, "IPv6": IPv6}
+    layers: dict[str, Any] = {
+        "Ether": Ether,
+        "ARP": ARP,
+        "IP": IP,
+        "IPv6": IPv6,
+        "Raw": Raw,
+    }
     cooked_linux = getattr(l2, "CookedLinux", None)
     cooked_linux_v2 = getattr(l2, "CookedLinuxV2", None)
     if cooked_linux is not None:
@@ -883,6 +1002,7 @@ def _debug_live_packet(
     writer = output or _LOGGER.info
     generated_event = packet_event is not None
     ignored = status == "ignored"
+    raw_packet = _packet_is_raw_only(packet)
     link_layer = (
         packet_event.link_layer_type
         if packet_event is not None
@@ -891,8 +1011,12 @@ def _debug_live_packet(
     parts = [
         "DEBUG_PACKET",
         f"status={status}",
+        f"packet_class={_packet_class_name(packet)}",
         f"summary={_packet_summary(packet)}",
         f"layers={_packet_layers_summary(packet)}",
+        f"raw={'yes' if raw_packet else 'no'}",
+        f"first_bytes_hex={_packet_first_bytes_hex(packet)}",
+        f"decoded_as={_debug_decoded_as(packet_event, raw_packet)}",
         f"link_layer={link_layer}",
         f"packet_event={'yes' if generated_event else 'no'}",
         f"ignored={'yes' if ignored else 'no'}",
@@ -912,6 +1036,10 @@ def _packet_summary(packet: Any) -> str:
     return _truncate_diagnostic_text(str(summary))
 
 
+def _packet_class_name(packet: Any) -> str:
+    return packet.__class__.__name__
+
+
 def _packet_layers_summary(packet: Any) -> str:
     try:
         layers = packet.layers()
@@ -928,12 +1056,182 @@ def _packet_layers_summary(packet: Any) -> str:
     return ">".join(layer_names)
 
 
+def _packet_is_raw_only(packet: Any) -> bool:
+    if _packet_class_name(packet) == "Raw":
+        return True
+
+    return _packet_layers_summary(packet) == "Raw"
+
+
+def _scapy_raw_payload_bytes(packet: Any, raw_layer: Any) -> bytes:
+    raw_load = getattr(raw_layer, "load", None)
+    if isinstance(raw_load, (bytes, bytearray, memoryview)):
+        return bytes(raw_load)
+
+    return _packet_first_bytes(packet, limit=None)
+
+
+def _packet_first_bytes_hex(packet: Any) -> str:
+    raw_bytes = _packet_first_bytes(packet, limit=32)
+    if not raw_bytes:
+        return "none"
+
+    return raw_bytes.hex(" ")
+
+
+def _packet_first_bytes(packet: Any, *, limit: int | None) -> bytes:
+    try:
+        raw_bytes = bytes(packet)
+    except Exception:
+        return b""
+
+    if limit is None:
+        return raw_bytes
+
+    return raw_bytes[:limit]
+
+
+def _debug_decoded_as(packet_event: PacketEvent | None, raw_packet: bool) -> str:
+    if packet_event is None:
+        return "no"
+
+    if not raw_packet:
+        return packet_event.link_layer_type
+
+    if packet_event.protocolo == "ARP":
+        return "Ether/ARP"
+    if packet_event.link_layer_type == LINK_LAYER_ETHERNET:
+        return "Ether/IPv6" if ":" in packet_event.ip_origen else "Ether/IP"
+    if packet_event.link_layer_type == LINK_LAYER_RAW_IP:
+        return "IPv6" if ":" in packet_event.ip_origen else "IP"
+
+    return packet_event.link_layer_type
+
+
 def _truncate_diagnostic_text(value: str) -> str:
     cleaned = " ".join(value.replace("\r", " ").replace("\n", " ").split())
     if len(cleaned) <= DEBUG_PACKET_SUMMARY_LIMIT:
         return cleaned
 
     return f"{cleaned[:DEBUG_PACKET_SUMMARY_LIMIT]}..."
+
+
+def _prepare_scapy_backend(interface: str, *, use_pcap: bool) -> None:
+    try:
+        import scapy
+        from scapy.config import conf
+    except ImportError as exc:
+        if use_pcap:
+            raise SnifferError("Scapy is required to enable libpcap capture") from exc
+        _LOGGER.info(
+            "LIVE_CAPTURE_BACKEND | scapy_version=unavailable use_pcap=unavailable "
+            "L2listen=unavailable L2socket=unavailable interface=%s "
+            "scapy_interfaces=unavailable interface_type=unavailable",
+            interface,
+        )
+        return
+
+    if use_pcap:
+        try:
+            conf.use_pcap = True
+        except Exception as exc:
+            raise SnifferError(
+                "Scapy libpcap backend is not available. Install libpcap-dev "
+                "and tcpdump, or run without --use-pcap."
+            ) from exc
+
+        if not bool(getattr(conf, "use_pcap", False)):
+            _log_scapy_backend_diagnostics(
+                interface,
+                _scapy_backend_diagnostics(scapy, conf, interface),
+            )
+            raise SnifferError(
+                "Scapy libpcap backend is not available. Install libpcap-dev "
+                "and tcpdump, or run without --use-pcap."
+            )
+
+        _LOGGER.info("LIVE_CAPTURE_BACKEND | libpcap requested and enabled")
+
+    _log_scapy_backend_diagnostics(
+        interface,
+        _scapy_backend_diagnostics(scapy, conf, interface),
+    )
+
+
+def _log_scapy_backend_diagnostics(
+    interface: str,
+    diagnostics: Mapping[str, str],
+) -> None:
+    _LOGGER.info(
+        "LIVE_CAPTURE_BACKEND | scapy_version=%s conf_use_pcap=%s L2listen=%s "
+        "L2socket=%s interface=%s scapy_interfaces=%s interface_type=%s",
+        diagnostics["scapy_version"],
+        diagnostics["conf_use_pcap"],
+        diagnostics["l2listen"],
+        diagnostics["l2socket"],
+        interface,
+        diagnostics["interfaces"],
+        diagnostics["interface_type"],
+    )
+
+
+def _scapy_backend_diagnostics(scapy: Any, conf: Any, interface: str) -> dict[str, str]:
+    return {
+        "scapy_version": str(getattr(scapy, "__version__", "unknown")),
+        "conf_use_pcap": str(getattr(conf, "use_pcap", "unknown")),
+        "l2listen": _scapy_callable_name(getattr(conf, "L2listen", None)),
+        "l2socket": _scapy_callable_name(getattr(conf, "L2socket", None)),
+        "interfaces": _scapy_interfaces_summary(conf),
+        "interface_type": _scapy_interface_type(conf, interface),
+    }
+
+
+def _scapy_callable_name(value: Any) -> str:
+    if value is None:
+        return "None"
+
+    return str(getattr(value, "__name__", value.__class__.__name__))
+
+
+def _scapy_interfaces_summary(conf: Any) -> str:
+    ifaces = getattr(conf, "ifaces", None)
+    if ifaces is None:
+        return "unavailable"
+
+    try:
+        names = list(ifaces.keys())
+    except Exception:
+        try:
+            names = [iface.name for iface in ifaces.values()]
+        except Exception:
+            return "unavailable"
+
+    cleaned = [str(name) for name in names if str(name).strip()]
+    if not cleaned:
+        return "none"
+
+    return ",".join(sorted(cleaned))
+
+
+def _scapy_interface_type(conf: Any, interface: str) -> str:
+    ifaces = getattr(conf, "ifaces", None)
+    if ifaces is None:
+        return "unavailable"
+
+    try:
+        iface = ifaces.dev_from_name(interface)
+    except Exception:
+        try:
+            iface = ifaces[interface]
+        except Exception:
+            return "unavailable"
+
+    for attribute in ("type", "description", "network_name", "name"):
+        value = getattr(iface, attribute, None)
+        if value:
+            return str(value)
+
+    return iface.__class__.__name__
 
 
 def _validate_interface(interface: str) -> str:
@@ -1016,12 +1314,14 @@ def _log_forever_health(
 ) -> None:
     logger.info(
         "LIVE_CAPTURE_HEALTH | interface=%s cycles=%s received=%s ignored=%s "
-        "unsupported=%s parse_errors=%s packet_events=%s engine_errors=%s "
-        "detections=%s dns_http_events=%s errors=%s",
+        "raw_packets=%s decoded_from_raw=%s unsupported=%s parse_errors=%s "
+        "packet_events=%s engine_errors=%s detections=%s dns_http_events=%s errors=%s",
         interface,
         totals["capture_cycles"],
         totals["packets_received"],
         totals["ignored_packets"],
+        totals["raw_packets"],
+        totals["decoded_from_raw"],
         totals["unsupported_packets"],
         totals["parse_errors"],
         totals["packet_events_processed"],

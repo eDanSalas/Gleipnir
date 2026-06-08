@@ -50,6 +50,7 @@ class Config:
     alert_max_per_minute: int = 5
     gleipnir_interface: str | None = None
     gleipnir_mode: str = "live"
+    gleipnir_scapy_use_pcap: bool = False
     health_log_interval_seconds: int = 300
     event_retention_days: int = 30
     max_log_size_mb: int = 50
@@ -92,6 +93,7 @@ class Config:
             "alert_max_per_minute": self.alert_max_per_minute,
             "gleipnir_interface": self.gleipnir_interface,
             "gleipnir_mode": self.gleipnir_mode,
+            "gleipnir_scapy_use_pcap": self.gleipnir_scapy_use_pcap,
             "health_log_interval_seconds": self.health_log_interval_seconds,
             "event_retention_days": self.event_retention_days,
             "max_log_size_mb": self.max_log_size_mb,
@@ -179,6 +181,11 @@ def load_config(
             "GLEIPNIR_MODE",
             default="live",
             choices=("offline", "replay", "live"),
+        ),
+        gleipnir_scapy_use_pcap=_optional_bool(
+            values,
+            "GLEIPNIR_SCAPY_USE_PCAP",
+            default=False,
         ),
         health_log_interval_seconds=_optional_int(
             values,

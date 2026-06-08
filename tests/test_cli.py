@@ -74,6 +74,8 @@ class CliTests(unittest.TestCase):
         start_live_capture = Mock(
             return_value=SimpleNamespace(
                 packets_received=4,
+                raw_packets=1,
+                decoded_from_raw=1,
                 ignored_packets=0,
                 unsupported_packets=0,
                 parse_errors=0,
@@ -109,8 +111,11 @@ class CliTests(unittest.TestCase):
         self.assertEqual(start_live_capture.call_args.kwargs["timeout"], 10.0)
         self.assertIn("packet_processor", start_live_capture.call_args.kwargs)
         self.assertFalse(start_live_capture.call_args.kwargs["debug_packets"])
+        self.assertFalse(start_live_capture.call_args.kwargs["use_pcap"])
         engine.shutdown.assert_called_once()
         self.assertIn("received=4", stdout.getvalue())
+        self.assertIn("raw_packets=1", stdout.getvalue())
+        self.assertIn("decoded_from_raw=1", stdout.getvalue())
         self.assertIn("ignored_packets=0", stdout.getvalue())
         self.assertIn("unsupported_packets=0", stdout.getvalue())
         self.assertIn("parse_errors=0", stdout.getvalue())
@@ -126,6 +131,8 @@ class CliTests(unittest.TestCase):
             )
             return SimpleNamespace(
                 packets_received=1,
+                raw_packets=0,
+                decoded_from_raw=0,
                 ignored_packets=0,
                 unsupported_packets=0,
                 parse_errors=0,
@@ -157,12 +164,52 @@ class CliTests(unittest.TestCase):
         self.assertIn("DEBUG_PACKET", stdout.getvalue())
         self.assertIn("packet_events=1", stdout.getvalue())
 
+    def test_live_command_enables_libpcap_backend_flag(self) -> None:
+        stdout = io.StringIO()
+        start_live_capture = Mock(
+            return_value=SimpleNamespace(
+                packets_received=1,
+                raw_packets=0,
+                decoded_from_raw=0,
+                ignored_packets=0,
+                unsupported_packets=0,
+                parse_errors=0,
+                packet_events_processed=1,
+                engine_errors=0,
+                detection_events_processed=1,
+                traffic_events_processed=0,
+                errors=0,
+            )
+        )
+        engine = Mock()
+
+        with patch("src.cli._create_engine", return_value=engine):
+            with patch("src.cli.start_live_capture", start_live_capture):
+                exit_code = cli.main(
+                    [
+                        "live",
+                        "--interface",
+                        "ens33",
+                        "--packet-count",
+                        "1",
+                        "--use-pcap",
+                    ],
+                    stdout=stdout,
+                    stderr=io.StringIO(),
+                )
+
+        self.assertEqual(exit_code, 0)
+        self.assertTrue(start_live_capture.call_args.kwargs["use_pcap"])
+        self.assertIn("packet_events=1", stdout.getvalue())
+
     def test_live_forever_command_calls_supervised_capture(self) -> None:
         stdout = io.StringIO()
         start_live_capture_forever = Mock(
             return_value=SimpleNamespace(
                 capture_cycles=2,
                 packets_received=5,
+                raw_packets=2,
+                decoded_from_raw=1,
                 ignored_packets=1,
                 unsupported_packets=0,
                 parse_errors=0,
@@ -206,6 +253,8 @@ class CliTests(unittest.TestCase):
         engine.shutdown.assert_called_once()
         self.assertIn("Live capture forever stopped", stdout.getvalue())
         self.assertIn("cycles=2", stdout.getvalue())
+        self.assertIn("raw_packets=2", stdout.getvalue())
+        self.assertIn("decoded_from_raw=1", stdout.getvalue())
         self.assertIn("ignored_packets=1", stdout.getvalue())
         self.assertIn("engine_errors=1", stdout.getvalue())
 

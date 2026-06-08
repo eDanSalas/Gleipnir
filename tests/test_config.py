@@ -23,6 +23,7 @@ ALERT_COOLDOWN_SECONDS=120
 ALERT_MAX_PER_MINUTE=3
 GLEIPNIR_INTERFACE=eth0
 GLEIPNIR_MODE=live
+GLEIPNIR_SCAPY_USE_PCAP=true
 HEALTH_LOG_INTERVAL_SECONDS=60
 EVENT_RETENTION_DAYS=14
 MAX_LOG_SIZE_MB=25
@@ -63,6 +64,7 @@ def test_load_config_reads_required_values(tmp_path: Path) -> None:
     assert config.alert_max_per_minute == 3
     assert config.gleipnir_interface == "eth0"
     assert config.gleipnir_mode == "live"
+    assert config.gleipnir_scapy_use_pcap is True
     assert config.health_log_interval_seconds == 60
     assert config.event_retention_days == 14
     assert config.max_log_size_mb == 25

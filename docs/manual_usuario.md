@@ -179,6 +179,7 @@ ALERT_MAX_PER_MINUTE=5
 
 GLEIPNIR_INTERFACE=
 GLEIPNIR_MODE=live
+GLEIPNIR_SCAPY_USE_PCAP=false
 HEALTH_LOG_INTERVAL_SECONDS=300
 EVENT_RETENTION_DAYS=30
 MAX_LOG_SIZE_MB=50
@@ -216,6 +217,7 @@ DASHBOARD_LOGIN_LOCKOUT_SECONDS=300
 | `ALERT_MAX_PER_MINUTE` | No | Maximo de alertas por correo permitidas por minuto. Valor recomendado: `5`. |
 | `GLEIPNIR_INTERFACE` | No | Interfaz esperada para captura live, por ejemplo `{INTERFAZ}` como `wlan0`, `eth0` o `ens33`. |
 | `GLEIPNIR_MODE` | No | Modo operativo esperado: `offline`, `replay` o `live`. |
+| `GLEIPNIR_SCAPY_USE_PCAP` | No | `true` para pedir a Scapy el backend libpcap durante captura live. Usarlo si la interfaz entrega paquetes como `Raw`. |
 | `HEALTH_LOG_INTERVAL_SECONDS` | No | Intervalo de logs de salud en modo `live --forever`. Valor recomendado: `300`. |
 | `EVENT_RETENTION_DAYS` | No | Dias que se conservan eventos en SQLite antes de mantenimiento. |
 | `MAX_LOG_SIZE_MB` | No | Tamano maximo esperado para rotacion/validacion de logs, en MB. |
@@ -431,11 +433,21 @@ Opciones adicionales:
 ```bash
 sudo gleipnir live --interface wlan0 --packet-count 100 --timeout 60
 sudo gleipnir live --interface wlan0 --forever
+sudo gleipnir live --interface ens33 --debug-packets --packet-count 20 --use-pcap
 ```
 
 La captura live usa Scapy y filtra ARP, IPv4 e IPv6. El monitor puede extraer
 DNS/HTTP cuando Scapy entrega esas capas o payloads legibles. No descifra HTTPS.
 El flujo live tambien usa `IDSEngine`.
+
+`--debug-packets` imprime diagnostico seguro por paquete: resumen, capas,
+clase Python, si llego como `Raw`, primeros 32 bytes en hexadecimal y si se
+pudo decodificar como Ethernet, IPv4 o IPv6. No imprime payloads completos.
+
+`--use-pcap` activa el backend libpcap de Scapy. Tambien puede habilitarse con
+`GLEIPNIR_SCAPY_USE_PCAP=true` en `.env`. Si libpcap no esta disponible,
+Gleipnir muestra un error claro y recomienda instalar `libpcap-dev` y
+`tcpdump`.
 
 `--forever` esta pensado para ejecucion 24/7, especialmente bajo `systemd`.
 Ejecuta ciclos supervisados de captura, reintenta errores recuperables, mantiene
@@ -738,6 +750,10 @@ python -m unittest discover -s tests
 - Error de `.env`: ejecutar `gleipnir test-config`.
 - Estado operativo dudoso: ejecutar `gleipnir status`.
 - Error de permisos live: usar `sudo` o capacidades de captura autorizadas.
+- Live muestra `summary=Raw`: Scapy esta recibiendo bytes sin decodificar la
+  capa de enlace. Instalar `libpcap-dev tcpdump`, verificar la interfaz con
+  `sudo tcpdump -i ens33 -c 10 -nn` y probar
+  `sudo .venv/bin/gleipnir live --interface ens33 --debug-packets --packet-count 20 --use-pcap`.
 - Servicio 24/7 se reinicia: revisar `journalctl -u gleipnir -f` y logs.
 - No hay dominios HTTP: el trafico HTTPS no expone host/ruta HTTP en texto claro.
 - No hay resultados AbuseIPDB/VirusTotal: revisar API keys, timeout y rate
