@@ -48,6 +48,13 @@ gleipnir --help
 cp .env.example .env
 chmod 600 .env
 mkdir -p data logs logs/reports
+touch data/whitelist.csv
+touch data/blacklist.txt
+touch data/dashboard_users.json
+touch data/gleipnir_events.db
+chmod 600 data/dashboard_users.json
+gleipnir status #Debe aparecer todo en OK
+gleipnir user create --username admin --role admin
 ```
 
 Editar `.env` antes de ejecutar el IDS. No guardar credenciales reales en el
