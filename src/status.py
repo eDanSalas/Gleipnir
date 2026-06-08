@@ -81,6 +81,7 @@ def run_healthcheck(
     items.append(_check_directory("log_dir", Path(config.log_dir), required=True))
     items.append(_check_directory("report_dir", Path(config.report_dir), required=False))
     items.append(_check_sqlite(Path(config.ids_db_path)))
+    items.append(_check_dashboard_users_file(config))
     items.append(_check_smtp(config, smtp_probe))
     items.append(_check_interface(config, interfaces))
 
@@ -175,6 +176,15 @@ def _check_sqlite(db_path: Path) -> HealthCheckItem:
         )
 
     return HealthCheckItem(STATUS_OK, "sqlite", f"Database is accessible: {db_path}")
+
+
+def _check_dashboard_users_file(config: Any) -> HealthCheckItem:
+    from src.dashboard.auth import check_users_file_permissions
+
+    users_file = Path(getattr(config, "dashboard_users_file", "data/dashboard_users.json"))
+    result = check_users_file_permissions(users_file)
+    status = STATUS_WARNING if result.is_warning else STATUS_OK
+    return HealthCheckItem(status, "dashboard_users", result.message)
 
 
 def _check_smtp(config: Any, smtp_checker: SmtpChecker) -> HealthCheckItem:

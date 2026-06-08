@@ -12,6 +12,11 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from src import cli
+from src.dashboard.auth import (
+    authenticate_dashboard_user,
+    create_dashboard_user,
+    list_dashboard_users,
+)
 from src.maintenance import MaintenanceResult
 from src.reports import ReportData
 from src.status import HealthCheckItem, HealthReport
@@ -297,6 +302,35 @@ class CliTests(unittest.TestCase):
         factory.assert_called_once_with(config=config)
         app.run.assert_called_once_with(host="127.0.0.1", port=8080)
         self.assertNotIn("ADVERTENCIA", stdout.getvalue())
+
+    def test_dashboard_command_prints_users_file_permission_warning(self) -> None:
+        stdout = io.StringIO()
+        config = SimpleNamespace(
+            ids_db_path=Path("data/events.db"),
+            dashboard_users_file=Path("data/dashboard_users.json"),
+        )
+        app = Mock()
+        permission_check = SimpleNamespace(
+            is_warning=True,
+            message="Dashboard users file has insecure permissions 644; recommended mode is 600",
+        )
+
+        with patch("src.cli._load_config", return_value=config):
+            with patch("src.cli.create_dashboard_app", return_value=app):
+                with patch(
+                    "src.cli.check_users_file_permissions",
+                    return_value=permission_check,
+                ):
+                    exit_code = cli.main(
+                        ["dashboard", "--host", "127.0.0.1", "--port", "8080"],
+                        stdout=stdout,
+                        stderr=io.StringIO(),
+                    )
+
+        self.assertEqual(exit_code, 0)
+        self.assertIn("WARNING", stdout.getvalue())
+        self.assertIn("600", stdout.getvalue())
+        self.assertNotIn("password_hash", stdout.getvalue())
 
     def test_dashboard_rejects_all_interfaces_without_allow_lan(self) -> None:
         stdout = io.StringIO()
@@ -637,6 +671,259 @@ class CliTests(unittest.TestCase):
             self.assertEqual(exit_code, 1)
             self.assertIn("already contains", stderr.getvalue())
 
+    def test_dashboard_user_commands_manage_hashed_users(self) -> None:
+        with self._temp_config() as config:
+            create_stdout = io.StringIO()
+            create_stderr = io.StringIO()
+            with patch("src.cli._load_config", return_value=config):
+                with patch(
+                    "src.cli.getpass.getpass",
+                    side_effect=["StrongPassword123!", "StrongPassword123!"],
+                ):
+                    create_exit = cli.main(
+                        ["user", "create", "--username", "admin", "--role", "admin"],
+                        stdout=create_stdout,
+                        stderr=create_stderr,
+                    )
+
+            raw_users = config.dashboard_users_file.read_text(encoding="utf-8")
+            self.assertEqual(create_exit, 0)
+            self.assertIn("Dashboard user created: admin", create_stdout.getvalue())
+            self.assertNotIn("StrongPassword123!", create_stdout.getvalue())
+            self.assertNotIn("StrongPassword123!", create_stderr.getvalue())
+            self.assertNotIn("StrongPassword123!", raw_users)
+            self.assertIn("password_hash", raw_users)
+
+            list_stdout = io.StringIO()
+            with patch("src.cli._load_config", return_value=config):
+                list_exit = cli.main(
+                    ["user", "list"],
+                    stdout=list_stdout,
+                    stderr=io.StringIO(),
+                )
+
+            self.assertEqual(list_exit, 0)
+            self.assertIn("admin", list_stdout.getvalue())
+            self.assertIn("role=admin", list_stdout.getvalue())
+            self.assertNotIn("password_hash", list_stdout.getvalue())
+
+            with patch("src.cli._load_config", return_value=config):
+                disable_exit = cli.main(
+                    ["user", "disable", "--username", "admin"],
+                    stdout=io.StringIO(),
+                    stderr=io.StringIO(),
+                )
+
+            disabled_list_stdout = io.StringIO()
+            with patch("src.cli._load_config", return_value=config):
+                cli.main(
+                    ["user", "list"],
+                    stdout=disabled_list_stdout,
+                    stderr=io.StringIO(),
+                )
+
+            self.assertEqual(disable_exit, 0)
+            self.assertIn("status=disabled", disabled_list_stdout.getvalue())
+
+            with patch("src.cli._load_config", return_value=config):
+                enable_exit = cli.main(
+                    ["user", "enable", "--username", "admin"],
+                    stdout=io.StringIO(),
+                    stderr=io.StringIO(),
+                )
+
+            self.assertEqual(enable_exit, 0)
+
+            with patch("src.cli._load_config", return_value=config):
+                with patch(
+                    "src.cli.getpass.getpass",
+                    side_effect=["NewStrongPassword123!", "NewStrongPassword123!"],
+                ):
+                    change_exit = cli.main(
+                        ["user", "change-password", "--username", "admin"],
+                        stdout=io.StringIO(),
+                        stderr=io.StringIO(),
+                    )
+
+            self.assertEqual(change_exit, 0)
+            self.assertIsNone(
+                authenticate_dashboard_user(
+                    config.dashboard_users_file,
+                    "admin",
+                    "StrongPassword123!",
+                )
+            )
+            self.assertIsNotNone(
+                authenticate_dashboard_user(
+                    config.dashboard_users_file,
+                    "admin",
+                    "NewStrongPassword123!",
+                )
+            )
+
+    def test_dashboard_user_migrate_env_creates_hashed_user(self) -> None:
+        with self._temp_config() as config:
+            config.dashboard_username = "legacy-admin"
+            config.dashboard_password = "LegacyPassword123!"
+            config.dashboard_role = "admin"
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+
+            with patch("src.cli._load_config", return_value=config):
+                exit_code = cli.main(
+                    ["user", "migrate-env"],
+                    stdout=stdout,
+                    stderr=stderr,
+                )
+
+            raw_users = config.dashboard_users_file.read_text(encoding="utf-8")
+            output = stdout.getvalue()
+
+            self.assertEqual(exit_code, 0)
+            self.assertIn("Dashboard user migrated: legacy-admin", output)
+            self.assertIn(
+                "El usuario fue migrado. Elimina DASHBOARD_USERNAME y DASHBOARD_PASSWORD de tu .env.",
+                output,
+            )
+            self.assertNotIn("LegacyPassword123!", output)
+            self.assertNotIn("LegacyPassword123!", stderr.getvalue())
+            self.assertNotIn("password_hash", output)
+            self.assertNotIn("LegacyPassword123!", raw_users)
+            self.assertIn("password_hash", raw_users)
+            self.assertIsNotNone(
+                authenticate_dashboard_user(
+                    config.dashboard_users_file,
+                    "legacy-admin",
+                    "LegacyPassword123!",
+                )
+            )
+
+    def test_dashboard_user_migrate_env_skips_existing_user(self) -> None:
+        with self._temp_config() as config:
+            create_dashboard_user(
+                config.dashboard_users_file,
+                username="admin",
+                password="StrongPassword123!",
+                role="admin",
+            )
+            config.dashboard_username = "admin"
+            config.dashboard_password = "LegacyPassword123!"
+            config.dashboard_role = "viewer"
+            stdout = io.StringIO()
+
+            with patch("src.cli._load_config", return_value=config):
+                exit_code = cli.main(
+                    ["user", "migrate-env"],
+                    stdout=stdout,
+                    stderr=io.StringIO(),
+                )
+
+            users = list_dashboard_users(config.dashboard_users_file)
+            output = stdout.getvalue()
+
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(len(users), 1)
+            self.assertIn("already exists", output)
+            self.assertIn(
+                "El usuario fue migrado. Elimina DASHBOARD_USERNAME y DASHBOARD_PASSWORD de tu .env.",
+                output,
+            )
+            self.assertNotIn("LegacyPassword123!", output)
+            self.assertNotIn("password_hash", output)
+            self.assertIsNotNone(
+                authenticate_dashboard_user(
+                    config.dashboard_users_file,
+                    "admin",
+                    "StrongPassword123!",
+                )
+            )
+            self.assertIsNone(
+                authenticate_dashboard_user(
+                    config.dashboard_users_file,
+                    "admin",
+                    "LegacyPassword123!",
+                )
+            )
+
+    def test_dashboard_user_migrate_env_reports_missing_legacy_variables(self) -> None:
+        with self._temp_config() as config:
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+
+            with patch("src.cli._load_config", return_value=config):
+                exit_code = cli.main(
+                    ["user", "migrate-env"],
+                    stdout=stdout,
+                    stderr=stderr,
+                )
+
+            self.assertEqual(exit_code, 0)
+            self.assertIn("No legacy dashboard credentials found", stdout.getvalue())
+            self.assertEqual("", stderr.getvalue())
+            self.assertFalse(config.dashboard_users_file.exists())
+
+    def test_dashboard_user_create_rejects_password_mismatch(self) -> None:
+        with self._temp_config() as config:
+            stderr = io.StringIO()
+            with patch("src.cli._load_config", return_value=config):
+                with patch(
+                    "src.cli.getpass.getpass",
+                    side_effect=["StrongPassword123!", "DifferentPassword123!"],
+                ):
+                    exit_code = cli.main(
+                        ["user", "create", "--username", "viewer", "--role", "viewer"],
+                        stdout=io.StringIO(),
+                        stderr=stderr,
+                    )
+
+            self.assertEqual(exit_code, 1)
+            self.assertIn("passwords do not match", stderr.getvalue())
+
+    def test_dashboard_user_create_rejects_weak_password(self) -> None:
+        with self._temp_config() as config:
+            stderr = io.StringIO()
+            with patch("src.cli._load_config", return_value=config):
+                with patch(
+                    "src.cli.getpass.getpass",
+                    side_effect=["weakpassword1!", "weakpassword1!"],
+                ):
+                    exit_code = cli.main(
+                        ["user", "create", "--username", "viewer", "--role", "viewer"],
+                        stdout=io.StringIO(),
+                        stderr=stderr,
+                    )
+
+            self.assertEqual(exit_code, 1)
+            self.assertIn("uppercase", stderr.getvalue())
+            self.assertNotIn("weakpassword1!", stderr.getvalue())
+
+    def test_dashboard_user_list_prints_permission_warning_without_hashes(self) -> None:
+        with self._temp_config() as config:
+            config.dashboard_users_file.write_text("[]", encoding="utf-8")
+            permission_check = SimpleNamespace(
+                is_warning=True,
+                message="Dashboard users file has insecure permissions 644; recommended mode is 600",
+            )
+            stdout = io.StringIO()
+
+            with patch("src.cli._load_config", return_value=config):
+                with patch(
+                    "src.cli.check_users_file_permissions",
+                    return_value=permission_check,
+                ):
+                    with patch("src.logger.setup_logging"):
+                        with patch("src.logger.get_logger", return_value=Mock()):
+                            exit_code = cli.main(
+                                ["user", "list"],
+                                stdout=stdout,
+                                stderr=io.StringIO(),
+                            )
+
+            self.assertEqual(exit_code, 0)
+            self.assertIn("WARNING", stdout.getvalue())
+            self.assertIn("600", stdout.getvalue())
+            self.assertNotIn("password_hash", stdout.getvalue())
+
     @staticmethod
     def _temp_config():
         from tempfile import TemporaryDirectory
@@ -648,6 +935,7 @@ class CliTests(unittest.TestCase):
                 return SimpleNamespace(
                     whitelist_file=root / "whitelist.csv",
                     blacklist_file=root / "blacklist.txt",
+                    dashboard_users_file=root / "dashboard_users.json",
                     report_dir=root / "reports",
                     log_dir=root / "logs",
                 )

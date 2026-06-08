@@ -66,6 +66,9 @@ class Config:
     dashboard_secret_key: str | None = field(default=None, repr=False)
     dashboard_session_cookie_secure: bool = False
     dashboard_session_timeout_minutes: int = 30
+    dashboard_password_min_length: int = 12
+    dashboard_login_max_attempts: int = 5
+    dashboard_login_lockout_seconds: int = 300
     deprecated_dashboard_env_vars: tuple[str, ...] = ()
 
     def as_redacted_dict(self) -> dict[str, str | int | float | None]:
@@ -107,6 +110,9 @@ class Config:
             "dashboard_session_timeout_minutes": (
                 self.dashboard_session_timeout_minutes
             ),
+            "dashboard_password_min_length": self.dashboard_password_min_length,
+            "dashboard_login_max_attempts": self.dashboard_login_max_attempts,
+            "dashboard_login_lockout_seconds": self.dashboard_login_lockout_seconds,
             "deprecated_dashboard_env_vars": self.deprecated_dashboard_env_vars,
         }
 
@@ -221,6 +227,24 @@ def load_config(
             values,
             "DASHBOARD_SESSION_TIMEOUT_MINUTES",
             default=30,
+            minimum=1,
+        ),
+        dashboard_password_min_length=_optional_int(
+            values,
+            "DASHBOARD_PASSWORD_MIN_LENGTH",
+            default=12,
+            minimum=8,
+        ),
+        dashboard_login_max_attempts=_optional_int(
+            values,
+            "DASHBOARD_LOGIN_MAX_ATTEMPTS",
+            default=5,
+            minimum=1,
+        ),
+        dashboard_login_lockout_seconds=_optional_int(
+            values,
+            "DASHBOARD_LOGIN_LOCKOUT_SECONDS",
+            default=300,
             minimum=1,
         ),
         deprecated_dashboard_env_vars=_deprecated_dashboard_env_vars(values),

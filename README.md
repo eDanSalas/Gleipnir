@@ -77,6 +77,12 @@ Variables operativas principales:
 - `DASHBOARD_SESSION_COOKIE_SECURE=false`: cambiar a `true` si se usa HTTPS.
 - `DASHBOARD_SESSION_TIMEOUT_MINUTES=30`: minutos antes de expirar la sesion
   web.
+- `DASHBOARD_PASSWORD_MIN_LENGTH=12`: longitud minima para crear o cambiar
+  contrasenas del dashboard.
+- `DASHBOARD_LOGIN_MAX_ATTEMPTS=5`: intentos fallidos antes del bloqueo
+  temporal.
+- `DASHBOARD_LOGIN_LOCKOUT_SECONDS=300`: duracion del bloqueo temporal de
+  login en segundos.
 
 ## Captura live
 
@@ -199,10 +205,16 @@ DASHBOARD_SECRET_KEY=<CLAVE_LARGA_ALEATORIA>
 DASHBOARD_USERS_FILE=data/dashboard_users.json
 DASHBOARD_SESSION_COOKIE_SECURE=false
 DASHBOARD_SESSION_TIMEOUT_MINUTES=30
+DASHBOARD_PASSWORD_MIN_LENGTH=12
+DASHBOARD_LOGIN_MAX_ATTEMPTS=5
+DASHBOARD_LOGIN_LOCKOUT_SECONDS=300
 ```
 
 Los usuarios ya no se guardan en `.env`. Se guardan en el archivo indicado por
-`DASHBOARD_USERS_FILE`, usando hashes seguros no reversibles:
+`DASHBOARD_USERS_FILE`, usando hashes seguros no reversibles. Las contrasenas
+no se encriptan de forma reversible porque no deben poder recuperarse en texto
+plano; Gleipnir solo necesita verificar que la contrasena ingresada produce un
+hash valido.
 
 ```json
 [
@@ -230,7 +242,55 @@ No versionar `data/dashboard_users.json`. Las variables antiguas
 `DASHBOARD_USERNAME`, `DASHBOARD_PASSWORD`, `DASHBOARD_ROLE`,
 `DASHBOARD_ADMIN_USERNAME` y `DASHBOARD_ADMIN_PASSWORD` estan deprecadas; si
 siguen presentes, Gleipnir muestra advertencia y no las usa por defecto para
-autenticar.
+autenticar. No guardar credenciales del dashboard en texto plano dentro de
+`.env`.
+
+Tambien se pueden administrar usuarios sin editar JSON a mano:
+
+```bash
+gleipnir user list
+gleipnir user migrate-env
+gleipnir user create --username viewer --role viewer
+gleipnir user create --username admin --role admin
+gleipnir user disable --username viewer
+gleipnir user enable --username viewer
+gleipnir user change-password --username admin
+```
+
+Si un despliegue antiguo todavia tiene `DASHBOARD_USERNAME` y
+`DASHBOARD_PASSWORD` en `.env`, ejecutar una sola vez:
+
+```bash
+gleipnir user migrate-env
+```
+
+El comando lee `DASHBOARD_USERNAME`, `DASHBOARD_PASSWORD` y, si existe,
+`DASHBOARD_ROLE`; crea el usuario equivalente en `DASHBOARD_USERS_FILE` con
+`password_hash`; y no imprime contrasena ni hash. Si el usuario ya existe, no
+lo duplica. Al terminar, no modifica `.env`: el operador debe eliminar
+manualmente `DASHBOARD_USERNAME` y `DASHBOARD_PASSWORD`.
+
+Los comandos `create` y `change-password` solicitan la contrasena con `getpass`
+y confirmacion. No existe opcion `--password` para evitar que la contrasena
+quede visible en historial de shell, procesos o logs. Solo se guarda
+`password_hash` en `DASHBOARD_USERS_FILE`.
+
+La politica de contrasenas se aplica al crear usuarios y al cambiar contrasena:
+longitud minima `DASHBOARD_PASSWORD_MIN_LENGTH` (12 por defecto), al menos una
+minuscula, una mayuscula, un numero y un simbolo, y rechazo de contrasenas
+comunes como `admin`, `password`, `password123`, `12345678`, `gleipnir` y
+`qwerty`.
+
+Proteccion contra fuerza bruta: `DASHBOARD_LOGIN_MAX_ATTEMPTS` define el maximo
+de intentos fallidos y `DASHBOARD_LOGIN_LOCKOUT_SECONDS` el bloqueo temporal.
+Los fallos de login se auditan como `ADMIN_LOGIN_FAILED` y los bloqueos como
+`LOGIN_LOCKED`, sin guardar contrasenas ni hashes.
+
+En Ubuntu se recomienda proteger el archivo local de usuarios:
+
+```bash
+chmod 600 data/dashboard_users.json
+```
 
 Si `DASHBOARD_AUTH_ENABLED=false`, el dashboard permite acceso sin login. Al
 usar `--host 0.0.0.0`, mantener la autenticacion activa. Con autenticacion
@@ -271,6 +331,11 @@ Checklist minimo del dashboard:
 
 - `.env` local fuera de Git.
 - `DASHBOARD_SECRET_KEY` definido.
+- Usuario `admin` creado con `gleipnir user create --username admin --role admin`.
+- Usuario `viewer` creado si se requiere una cuenta de solo lectura.
+- Credenciales antiguas `DASHBOARD_USERNAME` y `DASHBOARD_PASSWORD` eliminadas
+  del `.env` despues de `gleipnir user migrate-env`.
+- `data/dashboard_users.json` fuera de Git y con permisos `600` en Ubuntu.
 - `DASHBOARD_AUTH_ENABLED=true` al usar `0.0.0.0`.
 - HTTPS con reverse proxy si se usa fuera de localhost.
 - Firewall o segmentacion restringiendo acceso.

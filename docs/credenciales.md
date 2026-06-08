@@ -53,6 +53,9 @@ Variables operativas no secretas:
 - `DASHBOARD_USERS_FILE`
 - `DASHBOARD_SESSION_COOKIE_SECURE`
 - `DASHBOARD_SESSION_TIMEOUT_MINUTES`
+- `DASHBOARD_PASSWORD_MIN_LENGTH`
+- `DASHBOARD_LOGIN_MAX_ATTEMPTS`
+- `DASHBOARD_LOGIN_LOCKOUT_SECONDS`
 
 ## Credenciales del dashboard
 
@@ -65,15 +68,20 @@ DASHBOARD_SECRET_KEY=<CLAVE_LARGA_ALEATORIA>
 DASHBOARD_USERS_FILE=data/dashboard_users.json
 DASHBOARD_SESSION_COOKIE_SECURE=false
 DASHBOARD_SESSION_TIMEOUT_MINUTES=30
+DASHBOARD_PASSWORD_MIN_LENGTH=12
+DASHBOARD_LOGIN_MAX_ATTEMPTS=5
+DASHBOARD_LOGIN_LOCKOUT_SECONDS=300
 ```
 
 `DASHBOARD_SECRET_KEY` firma la sesion Flask y los tokens CSRF. Debe ser largo,
 aleatorio y distinto por entorno. No debe guardarse en Git ni compartirse en
 capturas de pantalla.
 
-Las contrasenas de usuarios del dashboard no se guardan en `.env`. Deben
-convertirse en hashes no reversibles con Werkzeug y guardarse en
-`DASHBOARD_USERS_FILE`:
+Las contrasenas de usuarios del dashboard no se guardan en `.env`. No se
+encriptan de forma reversible: se almacenan como hashes no reversibles con
+Werkzeug para que no puedan recuperarse en texto plano. `DASHBOARD_USERS_FILE`
+apunta al archivo local de cuentas, por defecto `data/dashboard_users.json`, con
+los campos `username`, `password_hash`, `role`, `enabled` y `created_at`:
 
 ```json
 [
@@ -92,6 +100,42 @@ No subir `data/dashboard_users.json` al repositorio. Las variables antiguas
 `DASHBOARD_USERNAME`, `DASHBOARD_PASSWORD`, `DASHBOARD_ROLE`,
 `DASHBOARD_ADMIN_USERNAME` y `DASHBOARD_ADMIN_PASSWORD` estan deprecadas y no se
 usan por defecto para autenticar.
+
+Administracion segura de cuentas:
+
+```bash
+gleipnir user list
+gleipnir user migrate-env
+gleipnir user create --username viewer --role viewer
+gleipnir user create --username admin --role admin
+gleipnir user disable --username viewer
+gleipnir user enable --username viewer
+gleipnir user change-password --username admin
+```
+
+`create` y `change-password` solicitan la contrasena con `getpass`; no aceptan
+`--password` para evitar que quede en historial de shell o listados de procesos.
+`migrate-env` permite convertir temporalmente `DASHBOARD_USERNAME` y
+`DASHBOARD_PASSWORD` en una cuenta con `password_hash`; despues de migrar, esas
+variables deben eliminarse manualmente del `.env`.
+
+Politica minima de contrasenas:
+
+- Longitud minima definida por `DASHBOARD_PASSWORD_MIN_LENGTH`, recomendado `12`.
+- Al menos una minuscula.
+- Al menos una mayuscula.
+- Al menos un numero.
+- Al menos un simbolo.
+- Rechazo de contrasenas comunes como `admin`, `password`, `password123`,
+  `12345678`, `gleipnir` y `qwerty`.
+
+Proteccion contra fuerza bruta:
+
+- `DASHBOARD_LOGIN_MAX_ATTEMPTS` limita intentos fallidos.
+- `DASHBOARD_LOGIN_LOCKOUT_SECONDS` define el bloqueo temporal.
+- Los fallos se auditan como `ADMIN_LOGIN_FAILED`.
+- Los bloqueos se auditan como `LOGIN_LOCKED`.
+- No se revela si el usuario existe y no se imprimen contrasenas ni hashes.
 
 Roles:
 
@@ -138,6 +182,7 @@ En Linux:
 
 ```bash
 chmod 600 .env
+chmod 600 data/dashboard_users.json
 chmod 700 logs
 chmod 700 logs/reports
 chmod 700 data
@@ -228,9 +273,16 @@ como `ALERT_SENT` o `ALERT_SUPPRESSED` y no deben incluir credenciales.
 - `.env` no versionado.
 - `.env` con permisos `600`.
 - `DASHBOARD_SECRET_KEY` definido si `DASHBOARD_AUTH_ENABLED=true`.
+- Usuario `admin` creado con `gleipnir user create --username admin --role admin`.
+- Usuario `viewer` creado si se requiere visualizacion separada.
+- Credenciales antiguas `DASHBOARD_USERNAME` y `DASHBOARD_PASSWORD` eliminadas
+  del `.env` despues de `gleipnir user migrate-env`.
 - `DASHBOARD_USERS_FILE` creado localmente con `password_hash`, no contrasenas
   en texto plano.
-- Passwords reales solo en el equipo de despliegue y nunca en Git.
+- `data/dashboard_users.json` con permisos `600` y excluido de Git.
+- Contrasenas reales solo en el equipo de despliegue y nunca en Git.
+- HTTPS/reverse proxy si el dashboard se expone fuera de localhost.
+- No exponer el dashboard a internet.
 - No publicar logs, reportes, SQLite ni capturas de pantalla con datos
   sensibles.
 - Rotar passwords/API keys al terminar la demo si se usaron valores reales.

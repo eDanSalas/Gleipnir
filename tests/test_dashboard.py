@@ -20,7 +20,7 @@ from src.dashboard.app import (
     DashboardError,
     create_app,
 )
-from src.dashboard.auth import hash_dashboard_password
+from src.dashboard.auth import LoginAttemptTracker, hash_dashboard_password
 from src.detector import AUTHORIZED_DEVICE, BLACKLISTED_EXTERNAL_IP, UNAUTHORIZED_DEVICE
 from src.storage import ALERT_SENT, DNS_EVENT, HTTP_EVENT, SQLiteEventStore
 from src.storage import (
@@ -31,6 +31,7 @@ from src.storage import (
     ADMIN_LOGOUT,
     ADMIN_WHITELIST_ADD,
     ADMIN_WHITELIST_REMOVE,
+    LOGIN_LOCKED,
 )
 from src.whitelist import load_whitelist
 from src.blacklist import list_blacklist_entries
@@ -412,6 +413,164 @@ def test_dashboard_login_rejects_invalid_credentials_without_echoing_secret(
     assert audit_events[-1].raw["result"] == "failed"
     assert audit_events[-1].raw["remote_ip"] == "192.168.10.60"
     _assert_audit_event_has_no_secrets(audit_events[-1])
+
+
+def test_dashboard_login_lockout_blocks_after_failed_attempts(tmp_path: Path) -> None:
+    config = _config(
+        tmp_path / "missing.db",
+        dashboard_auth_enabled=True,
+        dashboard_username="viewer",
+        dashboard_password="viewer-password",
+        dashboard_role="viewer",
+        dashboard_login_max_attempts=2,
+        dashboard_login_lockout_seconds=300,
+    )
+    app = create_app(config=config)
+    client = app.test_client()
+
+    first_response = client.post(
+        "/login",
+        data={"username": "viewer", "password": "wrong-password"},
+        environ_overrides={"REMOTE_ADDR": "192.168.10.90"},
+    )
+    second_response = client.post(
+        "/login",
+        data={"username": "viewer", "password": "wrong-password"},
+        environ_overrides={"REMOTE_ADDR": "192.168.10.90"},
+    )
+    locked_response = client.post(
+        "/login",
+        data={"username": "viewer", "password": "viewer-password"},
+        environ_overrides={"REMOTE_ADDR": "192.168.10.90"},
+    )
+    failed_events = _fetch_events(config.ids_db_path, ADMIN_LOGIN_FAILED)
+    locked_events = _fetch_events(config.ids_db_path, LOGIN_LOCKED)
+
+    assert first_response.status_code == 401
+    assert second_response.status_code == 401
+    assert locked_response.status_code == 401
+    assert b"Credenciales invalidas" in locked_response.data
+    assert b"viewer-password" not in locked_response.data
+    assert len(failed_events) == 2
+    assert locked_events[-1].raw["user"] == "viewer"
+    assert locked_events[-1].raw["remote_ip"] == "192.168.10.90"
+    assert locked_events[-1].raw["result"] == "locked"
+    _assert_audit_event_has_no_secrets(locked_events[-1])
+
+
+def test_dashboard_login_lockout_expires_after_window(tmp_path: Path) -> None:
+    current_time = {"value": 1000.0}
+    config = _config(
+        tmp_path / "missing.db",
+        dashboard_auth_enabled=True,
+        dashboard_username="viewer",
+        dashboard_password="viewer-password",
+        dashboard_role="viewer",
+        dashboard_login_max_attempts=2,
+        dashboard_login_lockout_seconds=10,
+    )
+    app = create_app(config=config)
+    app.config["GLEIPNIR_LOGIN_ATTEMPTS"] = LoginAttemptTracker(
+        max_attempts=2,
+        lockout_seconds=10,
+        time_provider=lambda: current_time["value"],
+    )
+    client = app.test_client()
+
+    client.post(
+        "/login",
+        data={"username": "viewer", "password": "wrong-password"},
+        environ_overrides={"REMOTE_ADDR": "192.168.10.91"},
+    )
+    client.post(
+        "/login",
+        data={"username": "viewer", "password": "wrong-password"},
+        environ_overrides={"REMOTE_ADDR": "192.168.10.91"},
+    )
+    current_time["value"] = 1011.0
+    response = client.post(
+        "/login",
+        data={"username": "viewer", "password": "viewer-password"},
+        environ_overrides={"REMOTE_ADDR": "192.168.10.91"},
+    )
+
+    assert response.status_code == 302
+    assert response.headers["Location"] == "/"
+
+
+def test_dashboard_login_success_resets_failed_attempts(tmp_path: Path) -> None:
+    config = _config(
+        tmp_path / "missing.db",
+        dashboard_auth_enabled=True,
+        dashboard_username="viewer",
+        dashboard_password="viewer-password",
+        dashboard_role="viewer",
+        dashboard_login_max_attempts=2,
+        dashboard_login_lockout_seconds=300,
+    )
+    app = create_app(config=config)
+    client = app.test_client()
+
+    client.post(
+        "/login",
+        data={"username": "viewer", "password": "wrong-password"},
+        environ_overrides={"REMOTE_ADDR": "192.168.10.92"},
+    )
+    success_response = client.post(
+        "/login",
+        data={"username": "viewer", "password": "viewer-password"},
+        environ_overrides={"REMOTE_ADDR": "192.168.10.92"},
+    )
+    client.get("/logout")
+    second_failure = client.post(
+        "/login",
+        data={"username": "viewer", "password": "wrong-password"},
+        environ_overrides={"REMOTE_ADDR": "192.168.10.92"},
+    )
+    second_success = client.post(
+        "/login",
+        data={"username": "viewer", "password": "viewer-password"},
+        environ_overrides={"REMOTE_ADDR": "192.168.10.92"},
+    )
+
+    assert success_response.status_code == 302
+    assert second_failure.status_code == 401
+    assert second_success.status_code == 302
+    assert _fetch_events(config.ids_db_path, LOGIN_LOCKED) == ()
+
+
+def test_dashboard_login_lockout_message_does_not_reveal_user_existence(
+    tmp_path: Path,
+) -> None:
+    config = _config(
+        tmp_path / "missing.db",
+        dashboard_auth_enabled=True,
+        dashboard_username="viewer",
+        dashboard_password="viewer-password",
+        dashboard_role="viewer",
+        dashboard_login_max_attempts=1,
+        dashboard_login_lockout_seconds=300,
+    )
+    app = create_app(config=config)
+    client = app.test_client()
+
+    unknown_response = client.post(
+        "/login",
+        data={"username": "unknown", "password": "wrong-password"},
+        environ_overrides={"REMOTE_ADDR": "192.168.10.93"},
+    )
+    known_response = client.post(
+        "/login",
+        data={"username": "viewer", "password": "wrong-password"},
+        environ_overrides={"REMOTE_ADDR": "192.168.10.94"},
+    )
+
+    assert unknown_response.status_code == 401
+    assert known_response.status_code == 401
+    assert b"Credenciales invalidas" in unknown_response.data
+    assert b"Credenciales invalidas" in known_response.data
+    assert b"unknown" not in unknown_response.data
+    assert b"viewer" not in known_response.data
 
 
 def test_dashboard_audit_falls_back_to_logger_without_sqlite(tmp_path: Path) -> None:
@@ -1002,6 +1161,8 @@ def _config(
     deprecated_dashboard_env_vars: tuple[str, ...] = (),
     dashboard_session_cookie_secure: bool = False,
     dashboard_session_timeout_minutes: int = 30,
+    dashboard_login_max_attempts: int = 5,
+    dashboard_login_lockout_seconds: int = 300,
 ) -> SimpleNamespace:
     root = db_path.parent
     users_file = dashboard_users_file or root / "dashboard_users.json"
@@ -1043,6 +1204,8 @@ def _config(
         dashboard_secret_key=dashboard_secret_key,
         dashboard_session_cookie_secure=dashboard_session_cookie_secure,
         dashboard_session_timeout_minutes=dashboard_session_timeout_minutes,
+        dashboard_login_max_attempts=dashboard_login_max_attempts,
+        dashboard_login_lockout_seconds=dashboard_login_lockout_seconds,
         deprecated_dashboard_env_vars=deprecated_dashboard_env_vars,
     )
 

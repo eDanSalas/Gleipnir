@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import getpass
 import ipaddress
 import json
 import sys
@@ -11,6 +12,16 @@ from typing import Any, Sequence, TextIO
 
 from src import blacklist, whitelist
 from src.dashboard import create_app as create_dashboard_app
+from src.dashboard.auth import (
+    change_dashboard_user_password,
+    check_users_file_permissions,
+    create_dashboard_user,
+    disable_dashboard_user,
+    enable_dashboard_user,
+    list_dashboard_users,
+    migrate_legacy_dashboard_user,
+    password_strength_recommendation,
+)
 from src.maintenance import format_maintenance_result, run_maintenance
 from src.reports import (
     REPORT_FORMATS,
@@ -191,6 +202,65 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     dashboard.set_defaults(handler=_handle_dashboard)
+
+    user_parser = subparsers.add_parser(
+        "user",
+        help="Manage local dashboard users stored with password hashes.",
+    )
+    user_subparsers = user_parser.add_subparsers(
+        dest="user_command",
+        required=True,
+    )
+
+    user_list = user_subparsers.add_parser(
+        "list",
+        help="List dashboard users without password hashes.",
+    )
+    user_list.set_defaults(handler=_handle_user_list)
+
+    user_create = user_subparsers.add_parser(
+        "create",
+        help="Create one dashboard user and store only its password hash.",
+    )
+    user_create.add_argument("--username", required=True, help="Dashboard username.")
+    user_create.add_argument(
+        "--role",
+        required=True,
+        choices=("viewer", "admin"),
+        help="Dashboard role: viewer or admin.",
+    )
+    user_create.set_defaults(handler=_handle_user_create)
+
+    user_disable = user_subparsers.add_parser(
+        "disable",
+        help="Disable one dashboard user.",
+    )
+    user_disable.add_argument("--username", required=True, help="Dashboard username.")
+    user_disable.set_defaults(handler=_handle_user_disable)
+
+    user_enable = user_subparsers.add_parser(
+        "enable",
+        help="Enable one dashboard user.",
+    )
+    user_enable.add_argument("--username", required=True, help="Dashboard username.")
+    user_enable.set_defaults(handler=_handle_user_enable)
+
+    user_change_password = user_subparsers.add_parser(
+        "change-password",
+        help="Change one dashboard user's password using a secure prompt.",
+    )
+    user_change_password.add_argument(
+        "--username",
+        required=True,
+        help="Dashboard username.",
+    )
+    user_change_password.set_defaults(handler=_handle_user_change_password)
+
+    user_migrate_env = user_subparsers.add_parser(
+        "migrate-env",
+        help="Migrate legacy DASHBOARD_USERNAME/PASSWORD from .env into password hashes.",
+    )
+    user_migrate_env.set_defaults(handler=_handle_user_migrate_env)
 
     whitelist_parser = subparsers.add_parser(
         "whitelist",
@@ -417,6 +487,7 @@ def _handle_dashboard(
     port = _validate_dashboard_port(args.port)
     host = str(args.host).strip() or "127.0.0.1"
     _validate_dashboard_exposure(args, host, config)
+    _print_users_file_permission_warning(config, stdout)
     app = create_dashboard_app(config=config)
 
     print(f"Starting Gleipnir dashboard at http://{host}:{port}", file=stdout)
@@ -473,6 +544,195 @@ def _log_dashboard_exposure_warning(config: Any) -> None:
         get_logger("dashboard").warning(LAN_DASHBOARD_WARNING)
     except Exception:
         return
+
+
+def _print_users_file_permission_warning(config: Any, stdout: TextIO) -> None:
+    users_file = getattr(config, "dashboard_users_file", "data/dashboard_users.json")
+    result = check_users_file_permissions(users_file)
+    if not result.is_warning:
+        return
+
+    message = f"WARNING: {result.message}"
+    print(message, file=stdout)
+    try:
+        from src.logger import get_logger, setup_logging
+
+        setup_logging(config)
+        get_logger("dashboard").warning(message)
+    except Exception:
+        return
+
+
+def _handle_user_list(
+    _args: argparse.Namespace,
+    stdout: TextIO,
+    _stderr: TextIO,
+) -> int:
+    config = _load_config()
+    _print_users_file_permission_warning(config, stdout)
+    users = list_dashboard_users(config.dashboard_users_file)
+    if not users:
+        print(f"Dashboard users file is empty or missing: {config.dashboard_users_file}", file=stdout)
+        return 0
+
+    print(f"Dashboard users ({len(users)}):", file=stdout)
+    for user in users:
+        status = "enabled" if user.enabled else "disabled"
+        print(
+            f"- {user.username} | role={user.role} | status={status} | "
+            f"created_at={user.created_at}",
+            file=stdout,
+        )
+    return 0
+
+
+def _handle_user_create(
+    args: argparse.Namespace,
+    stdout: TextIO,
+    stderr: TextIO,
+) -> int:
+    config = _load_config()
+    min_password_length = _dashboard_password_min_length(config)
+    password = _prompt_dashboard_password(stderr, min_password_length=min_password_length)
+    user = create_dashboard_user(
+        config.dashboard_users_file,
+        username=args.username,
+        password=password,
+        role=args.role,
+        min_password_length=min_password_length,
+    )
+    print(
+        f"Dashboard user created: {user.username} | role={user.role} | status=enabled",
+        file=stdout,
+    )
+    return 0
+
+
+def _handle_user_disable(
+    args: argparse.Namespace,
+    stdout: TextIO,
+    _stderr: TextIO,
+) -> int:
+    config = _load_config()
+    user = disable_dashboard_user(
+        config.dashboard_users_file,
+        username=args.username,
+    )
+    print(f"Dashboard user disabled: {user.username}", file=stdout)
+    return 0
+
+
+def _handle_user_enable(
+    args: argparse.Namespace,
+    stdout: TextIO,
+    _stderr: TextIO,
+) -> int:
+    config = _load_config()
+    user = enable_dashboard_user(
+        config.dashboard_users_file,
+        username=args.username,
+    )
+    print(f"Dashboard user enabled: {user.username}", file=stdout)
+    return 0
+
+
+def _handle_user_change_password(
+    args: argparse.Namespace,
+    stdout: TextIO,
+    stderr: TextIO,
+) -> int:
+    config = _load_config()
+    min_password_length = _dashboard_password_min_length(config)
+    password = _prompt_dashboard_password(stderr, min_password_length=min_password_length)
+    user = change_dashboard_user_password(
+        config.dashboard_users_file,
+        username=args.username,
+        password=password,
+        min_password_length=min_password_length,
+    )
+    print(f"Dashboard user password changed: {user.username}", file=stdout)
+    return 0
+
+
+def _handle_user_migrate_env(
+    _args: argparse.Namespace,
+    stdout: TextIO,
+    _stderr: TextIO,
+) -> int:
+    config = _load_config()
+    username = _legacy_dashboard_username(config)
+    password = _legacy_dashboard_password(config)
+    if not username or not password:
+        print(
+            "No legacy dashboard credentials found. Set DASHBOARD_USERNAME and "
+            "DASHBOARD_PASSWORD only long enough to run this migration.",
+            file=stdout,
+        )
+        return 0
+
+    result = migrate_legacy_dashboard_user(
+        config.dashboard_users_file,
+        username=username,
+        password=password,
+        role=_legacy_dashboard_role(config),
+    )
+    if result.created:
+        print(
+            f"Dashboard user migrated: {result.username} | role={result.role}",
+            file=stdout,
+        )
+    else:
+        print(
+            f"Dashboard user already exists, no duplicate created: {result.username}",
+            file=stdout,
+        )
+    print(
+        "El usuario fue migrado. Elimina DASHBOARD_USERNAME y DASHBOARD_PASSWORD de tu .env.",
+        file=stdout,
+    )
+    return 0
+
+
+def _prompt_dashboard_password(stderr: TextIO, *, min_password_length: int) -> str:
+    print(
+        f"Recommendation: {password_strength_recommendation(min_password_length)}",
+        file=stderr,
+    )
+    password = getpass.getpass("Dashboard password: ")
+    confirmation = getpass.getpass("Confirm dashboard password: ")
+    if password != confirmation:
+        raise ValueError("Dashboard passwords do not match")
+    return password
+
+
+def _dashboard_password_min_length(config: Any) -> int:
+    try:
+        return int(getattr(config, "dashboard_password_min_length", 12))
+    except (TypeError, ValueError):
+        return 12
+
+
+def _legacy_dashboard_username(config: Any) -> str | None:
+    return _clean_optional_config_value(getattr(config, "dashboard_username", None))
+
+
+def _legacy_dashboard_password(config: Any) -> str | None:
+    return _clean_optional_config_value(getattr(config, "dashboard_password", None))
+
+
+def _legacy_dashboard_role(config: Any) -> str:
+    role = _clean_optional_config_value(getattr(config, "dashboard_role", None))
+    if role is not None:
+        role = role.lower()
+    return role if role in {"viewer", "admin"} else "viewer"
+
+
+def _clean_optional_config_value(value: Any) -> str | None:
+    if value is None:
+        return None
+
+    cleaned = str(value).strip()
+    return cleaned or None
 
 
 def _handle_whitelist_list(

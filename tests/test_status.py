@@ -6,6 +6,9 @@ import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
+import src.dashboard.auth as dashboard_auth
 from src.status import (
     STATUS_ERROR,
     STATUS_OK,
@@ -35,6 +38,7 @@ def test_healthcheck_reports_all_core_components_ok(tmp_path: Path) -> None:
     assert statuses["log_dir"] == STATUS_OK
     assert statuses["report_dir"] == STATUS_OK
     assert statuses["sqlite"] == STATUS_OK
+    assert statuses["dashboard_users"] == STATUS_OK
     assert statuses["smtp"] == STATUS_OK
     assert statuses["interface"] == STATUS_OK
 
@@ -139,6 +143,49 @@ def test_healthcheck_warns_when_sqlite_database_does_not_exist(
     assert "does not exist yet" in sqlite_item.message
 
 
+def test_healthcheck_warns_when_dashboard_users_file_is_missing(
+    tmp_path: Path,
+) -> None:
+    config = _make_config(tmp_path, interface="eth0")
+    _create_runtime_files(config)
+    config.dashboard_users_file.unlink()
+
+    report = run_healthcheck(
+        config_loader=lambda: config,
+        smtp_checker=_smtp_ok,
+        interface_provider=lambda: [(1, "eth0")],
+    )
+
+    users_item = _item(report, "dashboard_users")
+
+    assert report.exit_code == 0
+    assert users_item.status == STATUS_WARNING
+    assert "does not exist" in users_item.message
+    assert "password_hash" not in users_item.message
+
+
+def test_healthcheck_warns_on_insecure_dashboard_users_permissions(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _make_config(tmp_path, interface="eth0")
+    _create_runtime_files(config)
+    config.dashboard_users_file.chmod(0o644)
+    monkeypatch.setattr(dashboard_auth.os, "name", "posix")
+
+    report = run_healthcheck(
+        config_loader=lambda: config,
+        smtp_checker=_smtp_ok,
+        interface_provider=lambda: [(1, "eth0")],
+    )
+
+    users_item = _item(report, "dashboard_users")
+
+    assert users_item.status == STATUS_WARNING
+    assert "600" in users_item.message
+    assert "password_hash" not in users_item.message
+
+
 def _make_config(tmp_path: Path, *, interface: str | None) -> SimpleNamespace:
     return SimpleNamespace(
         smtp_host="smtp.example.org",
@@ -149,6 +196,7 @@ def _make_config(tmp_path: Path, *, interface: str | None) -> SimpleNamespace:
         log_dir=tmp_path / "logs",
         report_dir=tmp_path / "reports",
         ids_db_path=tmp_path / "data" / "gleipnir_events.db",
+        dashboard_users_file=tmp_path / "data" / "dashboard_users.json",
         gleipnir_interface=interface,
         gleipnir_mode="live",
     )
@@ -161,6 +209,8 @@ def _create_runtime_files(config: SimpleNamespace) -> None:
         encoding="utf-8",
     )
     config.blacklist_file.write_text("8.8.8.8 # test\n", encoding="utf-8")
+    config.dashboard_users_file.write_text("[]", encoding="utf-8")
+    config.dashboard_users_file.chmod(0o600)
     config.log_dir.mkdir(parents=True, exist_ok=True)
     config.report_dir.mkdir(parents=True, exist_ok=True)
 

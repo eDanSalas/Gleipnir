@@ -108,6 +108,9 @@ DASHBOARD_SECRET_KEY=<CLAVE_LARGA_ALEATORIA>
 DASHBOARD_USERS_FILE=data/dashboard_users.json
 DASHBOARD_SESSION_COOKIE_SECURE=false
 DASHBOARD_SESSION_TIMEOUT_MINUTES=30
+DASHBOARD_PASSWORD_MIN_LENGTH=12
+DASHBOARD_LOGIN_MAX_ATTEMPTS=5
+DASHBOARD_LOGIN_LOCKOUT_SECONDS=300
 ```
 
 Desactivar autenticacion:
@@ -118,13 +121,32 @@ DASHBOARD_SECRET_KEY=
 DASHBOARD_USERS_FILE=data/dashboard_users.json
 DASHBOARD_SESSION_COOKIE_SECURE=false
 DASHBOARD_SESSION_TIMEOUT_MINUTES=30
+DASHBOARD_PASSWORD_MIN_LENGTH=12
+DASHBOARD_LOGIN_MAX_ATTEMPTS=5
+DASHBOARD_LOGIN_LOCKOUT_SECONDS=300
 ```
 
 Con la autenticacion activa, las contrasenas de usuarios no se guardan en `.env`.
 Los usuarios se cargan desde `DASHBOARD_USERS_FILE`, por defecto
 `data/dashboard_users.json`, y cada entrada debe contener un `password_hash`
-seguro no reversible. El hash se verifica con Werkzeug; no se desencripta ni se
-devuelve en vistas del dashboard.
+seguro no reversible. Las contrasenas no se encriptan porque el cifrado
+reversible permitiria recuperarlas en texto plano si se obtiene la llave. En su
+lugar, Gleipnir verifica con Werkzeug que la contrasena ingresada corresponda al
+hash guardado; no desencripta nada ni devuelve hashes en vistas del dashboard.
+
+Variables que deben permanecer en `.env` para cuentas y sesiones:
+
+- `DASHBOARD_AUTH_ENABLED`
+- `DASHBOARD_SECRET_KEY`
+- `DASHBOARD_USERS_FILE`
+- `DASHBOARD_SESSION_TIMEOUT_MINUTES`
+- `DASHBOARD_SESSION_COOKIE_SECURE`
+- `DASHBOARD_PASSWORD_MIN_LENGTH`
+- `DASHBOARD_LOGIN_MAX_ATTEMPTS`
+- `DASHBOARD_LOGIN_LOCKOUT_SECONDS`
+
+Las cuentas ya no deben definirse con `DASHBOARD_USERNAME` ni
+`DASHBOARD_PASSWORD`.
 
 Formato del archivo de usuarios:
 
@@ -163,6 +185,79 @@ PY
 existen en `.env`, Gleipnir muestra una advertencia clara y no las usa por
 defecto para autenticar.
 
+Administracion segura desde CLI:
+
+```bash
+gleipnir user list
+gleipnir user migrate-env
+gleipnir user create --username viewer --role viewer
+gleipnir user create --username admin --role admin
+gleipnir user disable --username viewer
+gleipnir user enable --username viewer
+gleipnir user change-password --username admin
+```
+
+Migracion desde variables antiguas:
+
+```bash
+gleipnir user migrate-env
+```
+
+Este comando facilita la transicion desde `DASHBOARD_USERNAME` y
+`DASHBOARD_PASSWORD` hacia `DASHBOARD_USERS_FILE`. Lee las variables antiguas y
+`DASHBOARD_ROLE` si existe, crea un usuario equivalente con `password_hash`, y
+no imprime contrasena ni hash. Si el usuario ya existe, no lo duplica. Gleipnir
+no edita `.env` automaticamente para evitar borrar datos sin consentimiento; al
+finalizar, eliminar manualmente `DASHBOARD_USERNAME` y `DASHBOARD_PASSWORD`.
+
+`create` y `change-password` usan `getpass`, por lo que la contrasena no se
+muestra en pantalla. No hay opcion `--password` y no debe agregarse: pasar
+contrasenas por argumentos puede dejarlas en historial de shell, listados de
+procesos o registros operativos. El comando valida rol, evita duplicados,
+aplica la politica de contrasenas y escribe solo `password_hash`.
+
+Permisos recomendados para Ubuntu 24.04 LTS:
+
+```bash
+chmod 600 data/dashboard_users.json
+```
+
+Cuando Gleipnir crea o reescribe `dashboard_users.json`, intenta aplicar permisos
+`600` en sistemas compatibles con permisos POSIX. `gleipnir status`,
+`gleipnir user list` y `gleipnir dashboard` revisan el archivo y muestran una
+advertencia si detectan permisos inseguros. En Windows no se fuerza esta
+validacion POSIX; el despliegue objetivo sigue siendo Ubuntu 24.04 LTS.
+
+Politica minima aplicada al crear usuarios o cambiar contrasena:
+
+- Longitud minima configurable con `DASHBOARD_PASSWORD_MIN_LENGTH`, por defecto
+  `12`.
+- Al menos una letra minuscula.
+- Al menos una letra mayuscula.
+- Al menos un numero.
+- Al menos un simbolo.
+- Rechazo de contrasenas comunes como `admin`, `password`, `password123`,
+  `12345678`, `gleipnir` y `qwerty`.
+
+La politica no se aplica durante login; en login solo se verifica el hash
+guardado. Los errores indican que regla fallo, pero no imprimen la contrasena.
+
+Proteccion basica contra fuerza bruta:
+
+- `DASHBOARD_LOGIN_MAX_ATTEMPTS=5`: intentos fallidos permitidos antes del
+  bloqueo temporal.
+- `DASHBOARD_LOGIN_LOCKOUT_SECONDS=300`: duracion del bloqueo en segundos.
+- Los fallos se cuentan por usuario y por IP remota cuando Flask la reporta.
+- Si se alcanza el limite, el login se bloquea temporalmente para ese usuario/IP
+  y se registra auditoria `LOGIN_LOCKED`.
+- Cada intento fallido se registra como `ADMIN_LOGIN_FAILED`.
+- El mensaje mostrado sigue siendo generico para no revelar si el usuario existe.
+- No se imprimen contrasenas ni hashes.
+
+En esta version el contador vive en memoria del proceso Flask. En despliegues
+multi-proceso o balanceados se requeriria persistencia compartida, por ejemplo
+una base central o cache compartido.
+
 Ademas, se habilita `/admin/lists` para administracion manual de listas. Si
 `DASHBOARD_AUTH_ENABLED=true`, `DASHBOARD_SECRET_KEY` tambien es obligatorio
 para firmar la sesion Flask y proteger formularios administrativos contra CSRF.
@@ -189,6 +284,8 @@ Limitaciones:
 - Usar solo en red local, laboratorio o infraestructura institucional
   autorizada.
 - Si se expone fuera del equipo, usar HTTPS con reverse proxy.
+- No hay MFA.
+- No hay recuperacion automatica de contrasena.
 - Para produccion real se requeriria autenticacion mas robusta.
 
 Para un despliegue con HTTPS, consultar
@@ -433,6 +530,11 @@ historico `ADMIN_LIST_ACTION` para reportes previos.
 - `.env` local y no versionado.
 - `DASHBOARD_SECRET_KEY` definido antes de activar autenticacion.
 - `DASHBOARD_AUTH_ENABLED=true` al usar `0.0.0.0 --allow-lan`.
+- Usuario `admin` creado con `gleipnir user create --username admin --role admin`.
+- Usuario `viewer` creado si se requiere visualizacion separada.
+- Credenciales antiguas `DASHBOARD_USERNAME` y `DASHBOARD_PASSWORD` eliminadas
+  del `.env` despues de `gleipnir user migrate-env`.
+- `data/dashboard_users.json` con permisos `600` en Ubuntu y fuera de Git.
 - No usar `--allow-unauthenticated-lan` salvo demo controlada.
 - HTTPS mediante Nginx/Caddy si se usa fuera de localhost.
 - `DASHBOARD_SESSION_COOKIE_SECURE=true` cuando se accede por HTTPS.

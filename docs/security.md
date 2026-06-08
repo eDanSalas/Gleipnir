@@ -14,6 +14,9 @@ DASHBOARD_SECRET_KEY=<CLAVE_LARGA_ALEATORIA>
 DASHBOARD_USERS_FILE=data/dashboard_users.json
 DASHBOARD_SESSION_COOKIE_SECURE=false
 DASHBOARD_SESSION_TIMEOUT_MINUTES=30
+DASHBOARD_PASSWORD_MIN_LENGTH=12
+DASHBOARD_LOGIN_MAX_ATTEMPTS=5
+DASHBOARD_LOGIN_LOCKOUT_SECONDS=300
 ```
 
 Activar autenticacion:
@@ -55,12 +58,80 @@ contrasenas en texto plano:
 ]
 ```
 
-Los hashes son no reversibles. Gleipnir verifica la contrasena con Werkzeug y no
-desencripta nada. Si un usuario tiene `enabled=false`, no puede iniciar sesion.
+Los hashes son no reversibles. Las contrasenas no se encriptan porque no deben
+poder recuperarse en texto plano; Gleipnir verifica la contrasena con Werkzeug y
+no desencripta nada. Si un usuario tiene `enabled=false`, no puede iniciar
+sesion.
+
+Variables actuales relacionadas con cuentas y sesion:
+
+- `DASHBOARD_AUTH_ENABLED`
+- `DASHBOARD_SECRET_KEY`
+- `DASHBOARD_USERS_FILE`
+- `DASHBOARD_SESSION_TIMEOUT_MINUTES`
+- `DASHBOARD_SESSION_COOKIE_SECURE`
+- `DASHBOARD_PASSWORD_MIN_LENGTH`
+- `DASHBOARD_LOGIN_MAX_ATTEMPTS`
+- `DASHBOARD_LOGIN_LOCKOUT_SECONDS`
+
 Las variables antiguas `DASHBOARD_USERNAME`, `DASHBOARD_PASSWORD`,
 `DASHBOARD_ROLE`, `DASHBOARD_ADMIN_USERNAME` y `DASHBOARD_ADMIN_PASSWORD` estan
 deprecadas; si aparecen en `.env`, se advierte al operador y no se usan por
 defecto para autenticar.
+
+Para migrar un despliegue antiguo sin dejar la contrasena en texto plano:
+
+```bash
+gleipnir user migrate-env
+```
+
+El comando lee temporalmente `DASHBOARD_USERNAME`, `DASHBOARD_PASSWORD` y
+`DASHBOARD_ROLE` si existe, crea la cuenta equivalente en
+`DASHBOARD_USERS_FILE` con `password_hash`, evita duplicados y no imprime
+contrasenas ni hashes. No modifica `.env`; despues de verificar la migracion,
+el operador debe eliminar manualmente `DASHBOARD_USERNAME` y
+`DASHBOARD_PASSWORD`.
+
+El archivo `data/dashboard_users.json` contiene hashes y metadatos de cuentas,
+por lo que debe ser accesible solo para el usuario del servicio. En Ubuntu
+24.04 LTS se recomienda:
+
+```bash
+chmod 600 data/dashboard_users.json
+```
+
+Al crear o reescribir el archivo, Gleipnir intenta aplicar permisos `600`. Si el
+archivo existe con permisos inseguros, `gleipnir status`, `gleipnir user list` y
+`gleipnir dashboard` muestran advertencia. En Windows no se fuerza el modelo
+POSIX, pero el despliegue objetivo documentado es Ubuntu 24.04 LTS.
+
+Comandos de administracion:
+
+```bash
+gleipnir user list
+gleipnir user migrate-env
+gleipnir user create --username viewer --role viewer
+gleipnir user create --username admin --role admin
+gleipnir user disable --username viewer
+gleipnir user enable --username viewer
+gleipnir user change-password --username admin
+```
+
+Politica de contrasenas:
+
+- Longitud minima `DASHBOARD_PASSWORD_MIN_LENGTH`, recomendado `12`.
+- Al menos una minuscula, una mayuscula, un numero y un simbolo.
+- Rechazo de contrasenas comunes: `admin`, `password`, `password123`,
+  `12345678`, `gleipnir` y `qwerty`.
+- La politica se aplica al crear o cambiar contrasena, no al login.
+
+Proteccion contra fuerza bruta:
+
+- `DASHBOARD_LOGIN_MAX_ATTEMPTS` limita intentos fallidos por usuario/IP.
+- `DASHBOARD_LOGIN_LOCKOUT_SECONDS` aplica bloqueo temporal.
+- Intentos fallidos: auditoria `ADMIN_LOGIN_FAILED`.
+- Bloqueos temporales: auditoria `LOGIN_LOCKED`.
+- Mensajes genericos para no revelar si el usuario existe.
 
 ## 2. Proteccion CSRF
 
@@ -154,6 +225,7 @@ El dashboard registra eventos administrativos:
 - `ADMIN_BLACKLIST_REMOVE`
 - `ADMIN_LOGIN_SUCCESS`
 - `ADMIN_LOGIN_FAILED`
+- `LOGIN_LOCKED`
 - `ADMIN_LOGOUT`
 
 Cada evento incluye:
@@ -174,6 +246,7 @@ se registran mediante `logger.py`.
 - No exponer el dashboard a internet.
 - No usar sin HTTPS fuera de laboratorio o red local confiable.
 - No hay MFA.
+- No hay recuperacion automatica de contrasena.
 - No hay gestion avanzada de usuarios.
 - No hay OAuth ni integracion con directorio corporativo.
 - Flask no implementa TLS dentro del proyecto; usar reverse proxy.
@@ -184,7 +257,12 @@ se registran mediante `logger.py`.
 - `.env` creado localmente y no versionado en Git.
 - `DASHBOARD_SECRET_KEY` definido con valor largo y aleatorio.
 - `DASHBOARD_AUTH_ENABLED=true` si se usa `0.0.0.0`.
+- Usuario `admin` creado con `gleipnir user create --username admin --role admin`.
+- Usuario `viewer` creado si se requiere cuenta de solo lectura.
+- Credenciales antiguas `DASHBOARD_USERNAME` y `DASHBOARD_PASSWORD` eliminadas
+  del `.env` despues de `gleipnir user migrate-env`.
 - `DASHBOARD_USERS_FILE` creado con usuarios habilitados y hashes no reversibles.
+- `data/dashboard_users.json` con permisos `600` en Ubuntu y fuera de Git.
 - Usuario con rol `viewer` para visualizacion y usuario `admin` separado si se
   administran listas desde navegador.
 - `gleipnir dashboard --host 127.0.0.1 --port 8080` para uso local.

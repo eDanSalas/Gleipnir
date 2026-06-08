@@ -149,6 +149,9 @@ DASHBOARD_SECRET_KEY=<CLAVE_LARGA_ALEATORIA>
 DASHBOARD_USERS_FILE=data/dashboard_users.json
 DASHBOARD_SESSION_COOKIE_SECURE=false
 DASHBOARD_SESSION_TIMEOUT_MINUTES=30
+DASHBOARD_PASSWORD_MIN_LENGTH=12
+DASHBOARD_LOGIN_MAX_ATTEMPTS=5
+DASHBOARD_LOGIN_LOCKOUT_SECONDS=300
 ```
 
 ### Que va en cada variable
@@ -182,6 +185,9 @@ DASHBOARD_SESSION_TIMEOUT_MINUTES=30
 | `DASHBOARD_USERS_FILE` | Si se activa auth | Ruta del JSON local de usuarios del dashboard con `password_hash`, por ejemplo `data/dashboard_users.json`. |
 | `DASHBOARD_SESSION_COOKIE_SECURE` | No | `false` en HTTP local; `true` cuando se usa HTTPS con reverse proxy. |
 | `DASHBOARD_SESSION_TIMEOUT_MINUTES` | No | Minutos antes de expirar la sesion del dashboard. Valor recomendado: `30`. |
+| `DASHBOARD_PASSWORD_MIN_LENGTH` | No | Longitud minima para crear o cambiar contrasenas del dashboard. Valor recomendado: `12`. |
+| `DASHBOARD_LOGIN_MAX_ATTEMPTS` | No | Intentos fallidos permitidos antes del bloqueo temporal. Valor recomendado: `5`. |
+| `DASHBOARD_LOGIN_LOCKOUT_SECONDS` | No | Duracion del bloqueo temporal de login en segundos. Valor recomendado: `300`. |
 
 Variables booleanas como `DASHBOARD_AUTH_ENABLED` y
 `DASHBOARD_SESSION_COOKIE_SECURE` aceptan valores como `true` o `false`.
@@ -190,9 +196,11 @@ Variables numericas como `SMTP_PORT`, `EVENT_RETENTION_DAYS` y
 
 ### Usuarios del dashboard con hashes
 
-Las contrasenas del dashboard no deben guardarse en `.env`. El archivo indicado
-por `DASHBOARD_USERS_FILE` debe contener usuarios con hashes seguros no
-reversibles:
+Las contrasenas del dashboard no deben guardarse en `.env`. Tampoco se
+encriptan de forma reversible: se almacenan como hashes no reversibles porque el
+sistema no debe poder recuperar una contrasena en texto plano. El archivo
+indicado por `DASHBOARD_USERS_FILE` debe contener usuarios con estos campos:
+`username`, `password_hash`, `role`, `enabled` y `created_at`.
 
 ```json
 [
@@ -229,6 +237,57 @@ No subir `data/dashboard_users.json` al repositorio. Las variables antiguas
 `DASHBOARD_ADMIN_USERNAME` y `DASHBOARD_ADMIN_PASSWORD` estan deprecadas; si se
 mantienen en `.env`, Gleipnir advierte que debe usarse `DASHBOARD_USERS_FILE` y
 no las usa por defecto para autenticar.
+
+Tambien se puede administrar el archivo de usuarios desde CLI:
+
+```bash
+gleipnir user list
+gleipnir user migrate-env
+gleipnir user create --username viewer --role viewer
+gleipnir user create --username admin --role admin
+gleipnir user disable --username viewer
+gleipnir user enable --username viewer
+gleipnir user change-password --username admin
+```
+
+Si un despliegue anterior usaba `DASHBOARD_USERNAME` y `DASHBOARD_PASSWORD`,
+ejecutar `gleipnir user migrate-env` una sola vez. El comando crea el usuario en
+`DASHBOARD_USERS_FILE` con `password_hash`, no imprime la contrasena ni el hash,
+no duplica usuarios existentes y no modifica `.env`. Despues de verificar el
+acceso, eliminar manualmente `DASHBOARD_USERNAME` y `DASHBOARD_PASSWORD`.
+
+Los comandos que asignan contrasena usan `getpass` y piden confirmacion. No se
+acepta `--password` para evitar que la contrasena quede guardada en historial de
+shell, listados de procesos o registros. Solo se guarda `password_hash`.
+
+Politica minima para crear o cambiar contrasenas del dashboard:
+
+- Longitud minima configurable con `DASHBOARD_PASSWORD_MIN_LENGTH`.
+- Al menos una minuscula.
+- Al menos una mayuscula.
+- Al menos un numero.
+- Al menos un simbolo.
+- Rechazo de contrasenas comunes: `admin`, `password`, `password123`,
+  `12345678`, `gleipnir` y `qwerty`.
+
+Esta politica no se aplica al login; el login solo verifica el hash guardado.
+
+Proteccion contra fuerza bruta:
+
+- `DASHBOARD_LOGIN_MAX_ATTEMPTS` limita intentos fallidos por usuario/IP.
+- `DASHBOARD_LOGIN_LOCKOUT_SECONDS` bloquea temporalmente nuevos intentos.
+- Los intentos fallidos se auditan como `ADMIN_LOGIN_FAILED`.
+- Los bloqueos se auditan como `LOGIN_LOCKED`.
+- Los mensajes no revelan si el usuario existe y nunca imprimen contrasenas.
+
+Permisos recomendados en Ubuntu:
+
+```bash
+chmod 600 data/dashboard_users.json
+```
+
+El archivo `data/dashboard_users.json` ya esta excluido en `.gitignore`; no debe
+subirse al repositorio.
 
 No subir `.env` al repositorio. La configuracion se valida con:
 
@@ -472,6 +531,11 @@ Checklist minimo:
 
 - `.env` con permisos `600` y fuera de Git.
 - `DASHBOARD_SECRET_KEY` definido.
+- Usuario `admin` creado con `gleipnir user create --username admin --role admin`.
+- Usuario `viewer` creado si se necesita una cuenta de solo lectura.
+- Credenciales antiguas `DASHBOARD_USERNAME` y `DASHBOARD_PASSWORD` eliminadas
+  del `.env` despues de migrar.
+- `data/dashboard_users.json` con permisos `600` y fuera de Git.
 - Autenticacion activa si se usa `0.0.0.0`.
 - HTTPS si se usa fuera de localhost.
 - Firewall restringido.

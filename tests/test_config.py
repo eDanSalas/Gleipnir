@@ -32,6 +32,9 @@ DASHBOARD_SECRET_KEY=dashboard-secret-key
 DASHBOARD_USERS_FILE=data/dashboard_users.json
 DASHBOARD_SESSION_COOKIE_SECURE=true
 DASHBOARD_SESSION_TIMEOUT_MINUTES=45
+DASHBOARD_PASSWORD_MIN_LENGTH=16
+DASHBOARD_LOGIN_MAX_ATTEMPTS=4
+DASHBOARD_LOGIN_LOCKOUT_SECONDS=120
 """
 
 
@@ -69,6 +72,9 @@ def test_load_config_reads_required_values(tmp_path: Path) -> None:
     assert config.dashboard_users_file == Path("data/dashboard_users.json")
     assert config.dashboard_session_cookie_secure is True
     assert config.dashboard_session_timeout_minutes == 45
+    assert config.dashboard_password_min_length == 16
+    assert config.dashboard_login_max_attempts == 4
+    assert config.dashboard_login_lockout_seconds == 120
     assert config.deprecated_dashboard_env_vars == ()
 
 
@@ -159,4 +165,31 @@ def test_load_config_rejects_invalid_dashboard_session_timeout(tmp_path: Path) -
     )
 
     with pytest.raises(ConfigError, match="DASHBOARD_SESSION_TIMEOUT_MINUTES"):
+        load_config(env_file=env_file, environ={})
+
+
+def test_load_config_rejects_invalid_dashboard_password_min_length(tmp_path: Path) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        VALID_ENV.replace(
+            "DASHBOARD_PASSWORD_MIN_LENGTH=16",
+            "DASHBOARD_PASSWORD_MIN_LENGTH=7",
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError, match="DASHBOARD_PASSWORD_MIN_LENGTH"):
+        load_config(env_file=env_file, environ={})
+
+
+def test_load_config_rejects_invalid_dashboard_login_lockout_values(
+    tmp_path: Path,
+) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        VALID_ENV.replace("DASHBOARD_LOGIN_MAX_ATTEMPTS=4", "DASHBOARD_LOGIN_MAX_ATTEMPTS=0"),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError, match="DASHBOARD_LOGIN_MAX_ATTEMPTS"):
         load_config(env_file=env_file, environ={})

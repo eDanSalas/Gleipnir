@@ -18,6 +18,7 @@ from typing import Any, Mapping
 from src import blacklist, whitelist
 from src.dashboard.auth import (
     DashboardAuthError,
+    LoginAttemptTracker,
     authenticate_dashboard_user,
     load_dashboard_users,
 )
@@ -34,6 +35,7 @@ from src.storage import (
     ADMIN_WHITELIST_REMOVE,
     DNS_EVENT,
     HTTP_EVENT,
+    LOGIN_LOCKED,
     SQLiteEventStore,
     StoredEvent,
 )
@@ -179,6 +181,10 @@ def create_app(config: Any | None = None, *, event_store_factory=SQLiteEventStor
     _configure_dashboard_session(app, runtime_config)
     app.config["GLEIPNIR_CONFIG"] = runtime_config
     app.config["GLEIPNIR_EVENT_STORE_FACTORY"] = event_store_factory
+    app.config["GLEIPNIR_LOGIN_ATTEMPTS"] = LoginAttemptTracker(
+        max_attempts=_dashboard_login_max_attempts(runtime_config),
+        lockout_seconds=_dashboard_login_lockout_seconds(runtime_config),
+    )
 
     @app.before_request
     def require_dashboard_auth():
@@ -205,12 +211,26 @@ def create_app(config: Any | None = None, *, event_store_factory=SQLiteEventStor
 
         if request.method == "POST":
             username = _form_value(request.form, "username")
+            remote_ip = _dashboard_remote_ip()
+            login_tracker = app.config["GLEIPNIR_LOGIN_ATTEMPTS"]
+            if login_tracker.is_locked(username, remote_ip):
+                _record_dashboard_audit_event(
+                    runtime_config,
+                    LOGIN_LOCKED,
+                    username=username,
+                    action="login",
+                    result="locked",
+                    message="Dashboard login temporarily locked.",
+                )
+                return _render_login_html(error="Credenciales invalidas."), 401
+
             role = _role_for_credentials(
                 runtime_config,
                 username,
                 _form_value(request.form, "password"),
             )
             if role is None:
+                lockout_triggered = login_tracker.record_failure(username, remote_ip)
                 _record_dashboard_audit_event(
                     runtime_config,
                     ADMIN_LOGIN_FAILED,
@@ -219,8 +239,18 @@ def create_app(config: Any | None = None, *, event_store_factory=SQLiteEventStor
                     result="failed",
                     message="Dashboard login failed.",
                 )
+                if lockout_triggered:
+                    _record_dashboard_audit_event(
+                        runtime_config,
+                        LOGIN_LOCKED,
+                        username=username,
+                        action="login",
+                        result="locked",
+                        message="Dashboard login temporarily locked.",
+                    )
                 return _render_login_html(error="Credenciales invalidas."), 401
 
+            login_tracker.record_success(username, remote_ip)
             _establish_dashboard_session(username, role)
             _record_dashboard_audit_event(
                 runtime_config,
@@ -541,6 +571,26 @@ def _dashboard_session_timeout_minutes(config: Any) -> int:
         return DEFAULT_SESSION_TIMEOUT_MINUTES
 
     return max(1, timeout_minutes)
+
+
+def _dashboard_login_max_attempts(config: Any) -> int:
+    value = getattr(config, "dashboard_login_max_attempts", 5)
+    try:
+        max_attempts = int(value)
+    except (TypeError, ValueError):
+        return 5
+
+    return max(1, max_attempts)
+
+
+def _dashboard_login_lockout_seconds(config: Any) -> int:
+    value = getattr(config, "dashboard_login_lockout_seconds", 300)
+    try:
+        lockout_seconds = int(value)
+    except (TypeError, ValueError):
+        return 300
+
+    return max(1, lockout_seconds)
 
 
 def _current_dashboard_role() -> str:

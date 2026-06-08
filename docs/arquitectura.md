@@ -77,8 +77,9 @@ Configuraciones relevantes de la version 2.0:
 - API keys opcionales para AbuseIPDB y VirusTotal.
 - Variables del dashboard: `DASHBOARD_AUTH_ENABLED`,
   `DASHBOARD_SECRET_KEY`, `DASHBOARD_USERS_FILE`,
-  `DASHBOARD_SESSION_COOKIE_SECURE` y
-  `DASHBOARD_SESSION_TIMEOUT_MINUTES`.
+  `DASHBOARD_SESSION_COOKIE_SECURE`, `DASHBOARD_SESSION_TIMEOUT_MINUTES`,
+  `DASHBOARD_PASSWORD_MIN_LENGTH`, `DASHBOARD_LOGIN_MAX_ATTEMPTS` y
+  `DASHBOARD_LOGIN_LOCKOUT_SECONDS`.
 
 ### `src/logger.py`
 
@@ -212,6 +213,22 @@ Controles del dashboard:
 
 Para produccion real, Flask debe quedar detras de Nginx/Caddy escuchando en
 `127.0.0.1`, con TLS terminado en el reverse proxy.
+
+### `src/dashboard/auth.py`
+
+Administra cuentas locales del dashboard. Las cuentas se leen desde
+`DASHBOARD_USERS_FILE`, por defecto `data/dashboard_users.json`, con campos
+`username`, `password_hash`, `role`, `enabled` y `created_at`.
+
+Las contrasenas no se encriptan de forma reversible; se guardan como hashes no
+reversibles para que no puedan recuperarse en texto plano. El modulo valida
+roles `viewer` y `admin`, aplica politica de contrasenas al crear o cambiar
+cuentas, evita usuarios duplicados, intenta permisos `600` en Ubuntu y permite
+migrar credenciales antiguas con `gleipnir user migrate-env`.
+
+La proteccion contra fuerza bruta vive en memoria del proceso Flask: cuenta
+fallos por usuario/IP, registra `ADMIN_LOGIN_FAILED` y genera `LOGIN_LOCKED`
+durante el bloqueo temporal.
 
 ### `src/reports.py`
 
