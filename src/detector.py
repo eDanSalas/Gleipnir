@@ -73,7 +73,7 @@ class DeviceDetector:
         *,
         alert_recipient: str | None = None,
         send_email: bool = True,
-        authorization_checker: Callable[[str, str], bool] = whitelist.is_authorized,
+        authorization_checker: Callable[[str, str | None], bool] = whitelist.is_authorized,
         alert_sender: Callable[[str, str, str], None] = mailer.send_alert,
     ) -> None:
         self._alert_recipient = alert_recipient
@@ -84,10 +84,19 @@ class DeviceDetector:
 
     def analyze(self, packet: PacketEvent) -> DetectionEvent:
         """Analyze one normalized packet event."""
+        source_mac = _format_optional_mac(packet.mac_origen)
+        destination_mac = _format_optional_mac(packet.mac_destino)
+        if packet.mac_origen is None:
+            self._logger.info(
+                "Packet source MAC unavailable: ip=%s link_layer=%s",
+                packet.ip_origen,
+                getattr(packet, "link_layer_type", "unknown"),
+            )
+
         if self._authorization_checker(packet.ip_origen, packet.mac_origen):
             message = (
                 "Authorized device observed: "
-                f"ip={packet.ip_origen} mac={packet.mac_origen} "
+                f"ip={packet.ip_origen} mac={source_mac} "
                 f"dst={packet.ip_destino} protocol={packet.protocolo}"
             )
             self._logger.info("%s | %s", AUTHORIZED_DEVICE, message)
@@ -100,8 +109,8 @@ class DeviceDetector:
 
         message = (
             "Unauthorized device detected: "
-            f"ip={packet.ip_origen} mac={packet.mac_origen} "
-            f"dst={packet.ip_destino} dst_mac={packet.mac_destino} "
+            f"ip={packet.ip_origen} mac={source_mac} "
+            f"dst={packet.ip_destino} dst_mac={destination_mac} "
             f"protocol={packet.protocolo} timestamp={packet.timestamp}"
         )
         self._logger.warning("%s | %s", UNAUTHORIZED_DEVICE, message)
@@ -137,9 +146,9 @@ class DeviceDetector:
             f"{message}\n\n"
             "Resumen:\n"
             f"- IP origen: {packet.ip_origen}\n"
-            f"- MAC origen: {packet.mac_origen}\n"
+            f"- MAC origen: {_format_optional_mac(packet.mac_origen)}\n"
             f"- IP destino: {packet.ip_destino}\n"
-            f"- MAC destino: {packet.mac_destino}\n"
+            f"- MAC destino: {_format_optional_mac(packet.mac_destino)}\n"
             f"- Protocolo: {packet.protocolo}\n"
             f"- Timestamp: {packet.timestamp}\n"
         )
@@ -325,6 +334,10 @@ def detect_blacklisted_external_ip(
 
 def _is_external_ip(ip_address: str) -> bool:
     return ipaddress.ip_address(ip_address).is_global
+
+
+def _format_optional_mac(value: str | None) -> str:
+    return value if value is not None else "unknown"
 
 
 def _coerce_alert_outcome(

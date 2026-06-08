@@ -111,6 +111,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Run supervised live capture continuously for systemd/24-7 execution.",
     )
+    live.add_argument(
+        "--debug-packets",
+        action="store_true",
+        help="Print one safe diagnostic summary per captured packet.",
+    )
     live.set_defaults(handler=_handle_live)
 
     report = subparsers.add_parser(
@@ -383,6 +388,8 @@ def _handle_live(args: argparse.Namespace, stdout: TextIO, _stderr: TextIO) -> i
                 packet_count=args.packet_count,
                 timeout=args.timeout,
                 packet_processor=_engine_packet_processor(engine),
+                debug_packets=args.debug_packets,
+                debug_output=lambda message: print(message, file=stdout),
                 health_log_interval_seconds=engine.config.health_log_interval_seconds,
             )
         else:
@@ -391,6 +398,8 @@ def _handle_live(args: argparse.Namespace, stdout: TextIO, _stderr: TextIO) -> i
                 packet_count=args.packet_count,
                 timeout=args.timeout,
                 packet_processor=_engine_packet_processor(engine),
+                debug_packets=args.debug_packets,
+                debug_output=lambda message: print(message, file=stdout),
             )
     finally:
         engine.shutdown()
@@ -400,7 +409,11 @@ def _handle_live(args: argparse.Namespace, stdout: TextIO, _stderr: TextIO) -> i
             "Live capture forever stopped: "
             f"cycles={result.capture_cycles} "
             f"received={result.packets_received} "
+            f"ignored_packets={result.ignored_packets} "
+            f"unsupported_packets={result.unsupported_packets} "
+            f"parse_errors={result.parse_errors} "
             f"packet_events={result.packet_events_processed} "
+            f"engine_errors={result.engine_errors} "
             f"detections={result.detection_events_processed} "
             f"dns_http_events={result.traffic_events_processed} "
             f"errors={result.errors}",
@@ -411,7 +424,11 @@ def _handle_live(args: argparse.Namespace, stdout: TextIO, _stderr: TextIO) -> i
     print(
         "Live capture complete: "
         f"received={result.packets_received} "
+        f"ignored_packets={result.ignored_packets} "
+        f"unsupported_packets={result.unsupported_packets} "
+        f"parse_errors={result.parse_errors} "
         f"packet_events={result.packet_events_processed} "
+        f"engine_errors={result.engine_errors} "
         f"detections={result.detection_events_processed} "
         f"dns_http_events={result.traffic_events_processed} "
         f"errors={result.errors}",

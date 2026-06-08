@@ -74,7 +74,11 @@ class CliTests(unittest.TestCase):
         start_live_capture = Mock(
             return_value=SimpleNamespace(
                 packets_received=4,
+                ignored_packets=0,
+                unsupported_packets=0,
+                parse_errors=0,
                 packet_events_processed=4,
+                engine_errors=1,
                 detection_events_processed=3,
                 traffic_events_processed=2,
                 errors=1,
@@ -104,9 +108,54 @@ class CliTests(unittest.TestCase):
         self.assertEqual(start_live_capture.call_args.kwargs["packet_count"], 4)
         self.assertEqual(start_live_capture.call_args.kwargs["timeout"], 10.0)
         self.assertIn("packet_processor", start_live_capture.call_args.kwargs)
+        self.assertFalse(start_live_capture.call_args.kwargs["debug_packets"])
         engine.shutdown.assert_called_once()
         self.assertIn("received=4", stdout.getvalue())
+        self.assertIn("ignored_packets=0", stdout.getvalue())
+        self.assertIn("unsupported_packets=0", stdout.getvalue())
+        self.assertIn("parse_errors=0", stdout.getvalue())
+        self.assertIn("engine_errors=1", stdout.getvalue())
         self.assertIn("errors=1", stdout.getvalue())
+
+    def test_live_command_enables_debug_packet_output(self) -> None:
+        stdout = io.StringIO()
+
+        def start_live_capture(*_args, **kwargs):
+            kwargs["debug_output"](
+                "DEBUG_PACKET | status=packet_event | summary=IP / TCP"
+            )
+            return SimpleNamespace(
+                packets_received=1,
+                ignored_packets=0,
+                unsupported_packets=0,
+                parse_errors=0,
+                packet_events_processed=1,
+                engine_errors=0,
+                detection_events_processed=1,
+                traffic_events_processed=0,
+                errors=0,
+            )
+
+        engine = Mock()
+
+        with patch("src.cli._create_engine", return_value=engine):
+            with patch("src.cli.start_live_capture", start_live_capture):
+                exit_code = cli.main(
+                    [
+                        "live",
+                        "--interface",
+                        "wlan0",
+                        "--debug-packets",
+                        "--packet-count",
+                        "1",
+                    ],
+                    stdout=stdout,
+                    stderr=io.StringIO(),
+                )
+
+        self.assertEqual(exit_code, 0)
+        self.assertIn("DEBUG_PACKET", stdout.getvalue())
+        self.assertIn("packet_events=1", stdout.getvalue())
 
     def test_live_forever_command_calls_supervised_capture(self) -> None:
         stdout = io.StringIO()
@@ -114,7 +163,11 @@ class CliTests(unittest.TestCase):
             return_value=SimpleNamespace(
                 capture_cycles=2,
                 packets_received=5,
+                ignored_packets=1,
+                unsupported_packets=0,
+                parse_errors=0,
                 packet_events_processed=5,
+                engine_errors=1,
                 detection_events_processed=4,
                 traffic_events_processed=3,
                 errors=1,
@@ -149,9 +202,12 @@ class CliTests(unittest.TestCase):
             120,
         )
         self.assertIn("packet_processor", start_live_capture_forever.call_args.kwargs)
+        self.assertFalse(start_live_capture_forever.call_args.kwargs["debug_packets"])
         engine.shutdown.assert_called_once()
         self.assertIn("Live capture forever stopped", stdout.getvalue())
         self.assertIn("cycles=2", stdout.getvalue())
+        self.assertIn("ignored_packets=1", stdout.getvalue())
+        self.assertIn("engine_errors=1", stdout.getvalue())
 
     def test_engine_packet_processor_calls_engine_with_dns_http_source(self) -> None:
         engine = Mock()

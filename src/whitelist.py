@@ -111,8 +111,11 @@ def validate_whitelist_file(file_path: str | Path) -> tuple[WhitelistEntry, ...]
     return entries
 
 
-def is_authorized(ip: str, mac: str) -> bool:
+def is_authorized(ip: str, mac: str | None) -> bool:
     """Return whether the IP/MAC pair exists in the loaded whitelist."""
+    if mac is None:
+        return False
+
     normalized_ip = validate_ip(ip)
     normalized_mac = validate_mac(mac)
 

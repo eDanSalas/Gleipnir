@@ -3,10 +3,15 @@
 from __future__ import annotations
 
 import unittest
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from src.detector import DetectionEvent, UNAUTHORIZED_DEVICE
 from src.sniffer import (
+    IgnoredPacketError,
+    LINK_LAYER_COOKED_LINUX,
+    LINK_LAYER_ETHERNET,
+    LINK_LAYER_RAW_IP,
     LIVE_CAPTURE_FILTER,
     PacketEvent,
     SnifferError,
@@ -112,8 +117,30 @@ class LiveSnifferTests(unittest.TestCase):
 
         self.assertEqual(result.packets_received, 2)
         self.assertEqual(result.packet_events_processed, 1)
+        self.assertEqual(result.parse_errors, 1)
         self.assertEqual(result.errors, 1)
         detector.assert_called_once()
+
+    def test_start_live_capture_counts_ignored_unsupported_and_parse_errors(self) -> None:
+        scapy = _load_scapy_or_skip(self)
+        ignored_packet = scapy.TCP()
+        unsupported_packet = bytes.fromhex("001122334455aabbccddeeff1234") + b"\x00" * 20
+        incomplete_packet = b"\x00\x01"
+
+        result = start_live_capture(
+            "eth0",
+            scapy_sniff=_sniff_that_replays(
+                [ignored_packet, unsupported_packet, incomplete_packet]
+            ),
+        )
+
+        self.assertEqual(result.packets_received, 3)
+        self.assertEqual(result.ignored_packets, 1)
+        self.assertEqual(result.unsupported_packets, 1)
+        self.assertEqual(result.parse_errors, 1)
+        self.assertEqual(result.packet_events_processed, 0)
+        self.assertEqual(result.engine_errors, 0)
+        self.assertEqual(result.errors, 2)
 
     def test_start_live_capture_continues_after_detector_and_monitor_errors(self) -> None:
         detector = Mock(side_effect=RuntimeError("detector failed"))
@@ -127,6 +154,7 @@ class LiveSnifferTests(unittest.TestCase):
         )
 
         self.assertEqual(result.packet_events_processed, 1)
+        self.assertEqual(result.engine_errors, 2)
         self.assertEqual(result.errors, 2)
         detector.assert_called_once()
         monitor.assert_called_once()
@@ -155,8 +183,41 @@ class LiveSnifferTests(unittest.TestCase):
         self.assertEqual(result.packets_received, 2)
         self.assertEqual(result.packet_events_processed, 2)
         self.assertEqual(result.detection_events_processed, 1)
+        self.assertEqual(result.engine_errors, 1)
         self.assertEqual(result.errors, 1)
         self.assertEqual(processor.call_count, 2)
+
+    def test_start_live_capture_debug_packets_outputs_safe_summary(self) -> None:
+        scapy = _load_scapy_or_skip(self)
+        debug_lines: list[str] = []
+
+        result = start_live_capture(
+            "eth0",
+            packet_processor=Mock(
+                return_value=SimpleProcessingResult(
+                    detection_event=None,
+                    dns_http_events=(),
+                )
+            ),
+            scapy_sniff=_sniff_that_replays(
+                [
+                    scapy.Ether(
+                        src="aa:bb:cc:dd:ee:ff",
+                        dst="66:55:44:33:22:11",
+                    )
+                    / scapy.IP(src="192.168.1.10", dst="8.8.8.8")
+                    / scapy.TCP()
+                ]
+            ),
+            debug_packets=True,
+            debug_output=debug_lines.append,
+        )
+
+        self.assertEqual(result.packet_events_processed, 1)
+        self.assertEqual(len(debug_lines), 1)
+        self.assertIn("DEBUG_PACKET", debug_lines[0])
+        self.assertIn("packet_event=yes", debug_lines[0])
+        self.assertIn("link_layer=ethernet", debug_lines[0])
 
     def test_start_live_capture_rejects_invalid_arguments(self) -> None:
         with self.assertRaisesRegex(SnifferError, "interface"):
@@ -309,6 +370,148 @@ class LiveSnifferTests(unittest.TestCase):
         self.assertEqual(packet.ip_destino, "192.168.1.1")
         self.assertEqual(packet.mac_destino, "ff:ff:ff:ff:ff:ff")
 
+    def test_parse_packet_accepts_real_scapy_ethernet_packets(self) -> None:
+        scapy = _load_scapy_or_skip(self)
+        cases = (
+            (
+                "ether_ip_tcp",
+                scapy.Ether(src="aa:bb:cc:dd:ee:ff", dst="66:55:44:33:22:11")
+                / scapy.IP(src="192.168.1.10", dst="8.8.8.8")
+                / scapy.TCP(),
+                "TCP",
+            ),
+            (
+                "ether_ip_udp",
+                scapy.Ether(src="aa:bb:cc:dd:ee:ff", dst="66:55:44:33:22:11")
+                / scapy.IP(src="192.168.1.10", dst="8.8.4.4")
+                / scapy.UDP(),
+                "UDP",
+            ),
+            (
+                "ether_ip_udp_dns",
+                scapy.Ether(src="aa:bb:cc:dd:ee:ff", dst="66:55:44:33:22:11")
+                / scapy.IP(src="192.168.1.10", dst="8.8.8.8")
+                / scapy.UDP(dport=53)
+                / scapy.DNS(qd=scapy.DNSQR(qname="example.org")),
+                "UDP",
+            ),
+            (
+                "ether_ipv6_tcp",
+                scapy.Ether(src="aa:bb:cc:dd:ee:ff", dst="66:55:44:33:22:11")
+                / scapy.IPv6(src="2001:db8::1", dst="2001:db8::2")
+                / scapy.TCP(),
+                "TCP",
+            ),
+        )
+
+        for name, packet, expected_protocol in cases:
+            with self.subTest(name=name):
+                event = parse_packet(packet)
+
+            self.assertEqual(event.link_layer_type, LINK_LAYER_ETHERNET)
+            self.assertEqual(event.mac_origen, "aa:bb:cc:dd:ee:ff")
+            self.assertEqual(event.mac_destino, "66:55:44:33:22:11")
+            self.assertEqual(event.protocolo, expected_protocol)
+
+    def test_parse_packet_accepts_real_scapy_ethernet_arp(self) -> None:
+        scapy = _load_scapy_or_skip(self)
+
+        event = parse_packet(
+            scapy.Ether(src="aa:bb:cc:dd:ee:ff", dst="ff:ff:ff:ff:ff:ff")
+            / scapy.ARP(
+                psrc="192.168.1.10",
+                pdst="192.168.1.1",
+                hwsrc="aa:bb:cc:dd:ee:ff",
+                hwdst="00:00:00:00:00:00",
+            )
+        )
+
+        self.assertEqual(event.link_layer_type, LINK_LAYER_ETHERNET)
+        self.assertEqual(event.protocolo, "ARP")
+        self.assertEqual(event.mac_origen, "aa:bb:cc:dd:ee:ff")
+        self.assertEqual(event.mac_destino, "ff:ff:ff:ff:ff:ff")
+
+    def test_parse_packet_accepts_scapy_raw_ip_without_ether(self) -> None:
+        scapy = _load_scapy_or_skip(self)
+
+        ipv4_event = parse_packet(
+            scapy.IP(src="192.168.1.10", dst="8.8.8.8") / scapy.TCP()
+        )
+        ipv6_event = parse_packet(
+            scapy.IPv6(src="2001:db8::1", dst="2001:db8::2") / scapy.TCP()
+        )
+
+        self.assertEqual(ipv4_event.link_layer_type, LINK_LAYER_RAW_IP)
+        self.assertEqual(ipv4_event.mac_origen, None)
+        self.assertEqual(ipv4_event.mac_destino, None)
+        self.assertEqual(ipv4_event.protocolo, "TCP")
+        self.assertEqual(ipv6_event.link_layer_type, LINK_LAYER_RAW_IP)
+        self.assertEqual(ipv6_event.mac_origen, None)
+        self.assertEqual(ipv6_event.mac_destino, None)
+        self.assertEqual(ipv6_event.protocolo, "TCP")
+
+    def test_parse_packet_accepts_scapy_cooked_linux_packets(self) -> None:
+        scapy = _load_scapy_or_skip(self)
+        cooked_classes = [
+            cls
+            for cls in (scapy.CookedLinux, scapy.CookedLinuxV2)
+            if cls is not None
+        ]
+        if not cooked_classes:
+            self.skipTest("Scapy CookedLinux layers are not available")
+
+        for cooked_class in cooked_classes:
+            with self.subTest(cooked=cooked_class.__name__):
+                event = parse_packet(
+                    cooked_class()
+                    / scapy.IP(src="192.168.1.10", dst="8.8.8.8")
+                    / scapy.TCP()
+                )
+
+            self.assertEqual(event.link_layer_type, LINK_LAYER_COOKED_LINUX)
+            self.assertEqual(event.ip_origen, "192.168.1.10")
+            self.assertEqual(event.ip_destino, "8.8.8.8")
+            self.assertEqual(event.mac_destino, None)
+            self.assertEqual(event.protocolo, "TCP")
+
+    def test_parse_packet_ignores_non_target_scapy_packet(self) -> None:
+        scapy = _load_scapy_or_skip(self)
+
+        with self.assertRaises(IgnoredPacketError):
+            parse_packet(scapy.TCP())
+
+    def test_parse_packet_rejects_incomplete_scapy_packet(self) -> None:
+        ip_layer = object()
+
+        class FakeIp:
+            src = None
+            dst = "8.8.8.8"
+            proto = 6
+
+        class FakeScapyPacket:
+            time = 12.5
+
+            def __contains__(self, layer: object) -> bool:
+                return layer is ip_layer
+
+            def __getitem__(self, layer: object) -> object:
+                if layer is ip_layer:
+                    return FakeIp()
+                raise KeyError(layer)
+
+            def summary(self) -> str:
+                return "FakeScapyPacket incomplete IP"
+
+            def layers(self) -> list[object]:
+                return [FakeIp]
+
+        with patch(
+            "src.sniffer._load_scapy_layers",
+            return_value={"Ether": object(), "ARP": object(), "IP": ip_layer, "IPv6": object()},
+        ):
+            with self.assertRaises(SnifferError):
+                parse_packet(FakeScapyPacket())
+
 
 def _sniff_that_replays(packets):
     sniff = Mock()
@@ -320,6 +523,30 @@ def _sniff_that_replays(packets):
 
     sniff.side_effect = replay_packets
     return sniff
+
+
+def _load_scapy_or_skip(test_case: unittest.TestCase) -> SimpleNamespace:
+    try:
+        from scapy.layers.dns import DNS, DNSQR
+        from scapy.layers.inet import IP, TCP, UDP
+        from scapy.layers.inet6 import IPv6
+        from scapy.layers.l2 import ARP, Ether
+        from scapy.layers import l2
+    except ImportError as exc:
+        test_case.skipTest(f"Scapy is not available: {exc}")
+
+    return SimpleNamespace(
+        ARP=ARP,
+        DNS=DNS,
+        DNSQR=DNSQR,
+        Ether=Ether,
+        IP=IP,
+        IPv6=IPv6,
+        TCP=TCP,
+        UDP=UDP,
+        CookedLinux=getattr(l2, "CookedLinux", None),
+        CookedLinuxV2=getattr(l2, "CookedLinuxV2", None),
+    )
 
 
 def _monotonic_values(values):

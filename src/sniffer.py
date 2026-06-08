@@ -33,6 +33,12 @@ PROTOCOL_NAMES = {
     17: "UDP",
     58: "ICMPv6",
 }
+DEBUG_PACKET_SUMMARY_LIMIT = 220
+MAX_DIAGNOSTIC_PACKET_LOGS = 10
+LINK_LAYER_ETHERNET = "ethernet"
+LINK_LAYER_COOKED_LINUX = "cooked_linux"
+LINK_LAYER_RAW_IP = "raw_ip"
+LINK_LAYER_UNKNOWN = "unknown"
 _LOGGER = get_logger("sniffer")
 _LOGGER.addHandler(logging.NullHandler())
 
@@ -41,16 +47,25 @@ class SnifferError(ValueError):
     """Raised when offline packet data cannot be processed."""
 
 
+class IgnoredPacketError(SnifferError):
+    """Raised when a packet is valid but outside the IDS live-capture scope."""
+
+
+class UnsupportedPacketError(SnifferError):
+    """Raised when a packet uses a link-layer format not yet supported."""
+
+
 @dataclass(frozen=True)
 class PacketEvent:
     """Normalized packet metadata extracted by the offline sniffer."""
 
     timestamp: float
-    mac_origen: str
-    mac_destino: str
+    mac_origen: str | None
+    mac_destino: str | None
     ip_origen: str
     ip_destino: str
     protocolo: str
+    link_layer_type: str = LINK_LAYER_UNKNOWN
 
 
 PacketInfo = PacketEvent
@@ -65,7 +80,11 @@ class LiveCaptureResult:
     """Summary of a completed live capture session."""
 
     packets_received: int
+    ignored_packets: int
+    unsupported_packets: int
+    parse_errors: int
     packet_events_processed: int
+    engine_errors: int
     detection_events_processed: int
     traffic_events_processed: int
     errors: int
@@ -77,7 +96,11 @@ class LiveCaptureForeverResult:
 
     capture_cycles: int
     packets_received: int
+    ignored_packets: int
+    unsupported_packets: int
+    parse_errors: int
     packet_events_processed: int
+    engine_errors: int
     detection_events_processed: int
     traffic_events_processed: int
     errors: int
@@ -135,6 +158,8 @@ def start_live_capture(
     traffic_monitor: TrafficMonitor | None = None,
     packet_processor: PacketProcessor | None = None,
     scapy_sniff: ScapySniff | None = None,
+    debug_packets: bool = False,
+    debug_output: Callable[[str], Any] | None = None,
 ) -> LiveCaptureResult:
     """Capture live packets with Scapy and process them defensively.
 
@@ -157,30 +182,109 @@ def start_live_capture(
     )
 
     packets_received = 0
+    ignored_packets = 0
+    unsupported_packets = 0
+    parse_errors = 0
     packet_events_processed = 0
+    engine_errors = 0
     detection_events_processed = 0
     traffic_events_processed = 0
-    errors = 0
+    diagnostic_logs_emitted = 0
+    mac_unavailable_logs_emitted = 0
 
     def handle_packet(packet: Any) -> None:
         nonlocal packets_received
+        nonlocal ignored_packets
+        nonlocal unsupported_packets
+        nonlocal parse_errors
         nonlocal packet_events_processed
+        nonlocal engine_errors
         nonlocal detection_events_processed
         nonlocal traffic_events_processed
-        nonlocal errors
+        nonlocal diagnostic_logs_emitted
+        nonlocal mac_unavailable_logs_emitted
 
         packets_received += 1
 
         try:
             packet_event = parse_packet(packet)
             packet_events_processed += 1
+            if packet_event.mac_origen is None or packet_event.mac_destino is None:
+                mac_unavailable_logs_emitted = _log_mac_unavailable_if_sampled(
+                    packet,
+                    packet_event,
+                    mac_unavailable_logs_emitted,
+                )
+            _debug_live_packet(
+                debug_packets,
+                debug_output,
+                packet,
+                packet_event=packet_event,
+                status="packet_event",
+            )
+        except IgnoredPacketError as exc:
+            ignored_packets += 1
+            diagnostic_logs_emitted = _log_live_packet_problem_if_sampled(
+                packet,
+                exc,
+                category="ignored",
+                logs_emitted=diagnostic_logs_emitted,
+            )
+            _debug_live_packet(
+                debug_packets,
+                debug_output,
+                packet,
+                status="ignored",
+                error=exc,
+            )
+            return
+        except UnsupportedPacketError as exc:
+            unsupported_packets += 1
+            diagnostic_logs_emitted = _log_live_packet_problem_if_sampled(
+                packet,
+                exc,
+                category="unsupported",
+                logs_emitted=diagnostic_logs_emitted,
+            )
+            _debug_live_packet(
+                debug_packets,
+                debug_output,
+                packet,
+                status="unsupported",
+                error=exc,
+            )
+            return
         except SnifferError as exc:
-            errors += 1
-            _LOGGER.warning("LIVE_CAPTURE | packet parse failed: %s", exc)
+            parse_errors += 1
+            diagnostic_logs_emitted = _log_live_packet_problem_if_sampled(
+                packet,
+                exc,
+                category="parse_error",
+                logs_emitted=diagnostic_logs_emitted,
+            )
+            _debug_live_packet(
+                debug_packets,
+                debug_output,
+                packet,
+                status="parse_error",
+                error=exc,
+            )
             return
         except Exception as exc:
-            errors += 1
-            _LOGGER.exception("LIVE_CAPTURE | unexpected packet parse error: %s", exc)
+            parse_errors += 1
+            diagnostic_logs_emitted = _log_live_packet_problem_if_sampled(
+                packet,
+                exc,
+                category="parse_error",
+                logs_emitted=diagnostic_logs_emitted,
+            )
+            _debug_live_packet(
+                debug_packets,
+                debug_output,
+                packet,
+                status="parse_error",
+                error=exc,
+            )
             return
 
         if packet_processor is not None:
@@ -192,8 +296,21 @@ def start_live_capture(
                     getattr(processing_result, "dns_http_events", ())
                 )
             except Exception as exc:
-                errors += 1
-                _LOGGER.exception("LIVE_CAPTURE | packet processor failed: %s", exc)
+                engine_errors += 1
+                diagnostic_logs_emitted = _log_live_packet_problem_if_sampled(
+                    packet,
+                    exc,
+                    category="engine_error",
+                    logs_emitted=diagnostic_logs_emitted,
+                )
+                _debug_live_packet(
+                    debug_packets,
+                    debug_output,
+                    packet,
+                    packet_event=packet_event,
+                    status="engine_error",
+                    error=exc,
+                )
             return
 
         try:
@@ -202,16 +319,26 @@ def start_live_capture(
             if detection_event is not None:
                 detection_events_processed += 1
         except Exception as exc:
-            errors += 1
-            _LOGGER.exception("LIVE_CAPTURE | detector failed: %s", exc)
+            engine_errors += 1
+            diagnostic_logs_emitted = _log_live_packet_problem_if_sampled(
+                packet,
+                exc,
+                category="engine_error",
+                logs_emitted=diagnostic_logs_emitted,
+            )
 
         try:
             assert monitor is not None
             traffic_events = monitor(packet)
             traffic_events_processed += len(traffic_events)
         except Exception as exc:
-            errors += 1
-            _LOGGER.exception("LIVE_CAPTURE | DNS/HTTP monitor failed: %s", exc)
+            engine_errors += 1
+            diagnostic_logs_emitted = _log_live_packet_problem_if_sampled(
+                packet,
+                exc,
+                category="engine_error",
+                logs_emitted=diagnostic_logs_emitted,
+            )
 
     sniff_options: dict[str, Any] = {
         "iface": capture_interface,
@@ -234,10 +361,14 @@ def start_live_capture(
 
     return LiveCaptureResult(
         packets_received=packets_received,
+        ignored_packets=ignored_packets,
+        unsupported_packets=unsupported_packets,
+        parse_errors=parse_errors,
         packet_events_processed=packet_events_processed,
+        engine_errors=engine_errors,
         detection_events_processed=detection_events_processed,
         traffic_events_processed=traffic_events_processed,
-        errors=errors,
+        errors=unsupported_packets + parse_errors + engine_errors,
     )
 
 
@@ -250,6 +381,8 @@ def start_live_capture_forever(
     traffic_monitor: TrafficMonitor | None = None,
     packet_processor: PacketProcessor | None = None,
     scapy_sniff: ScapySniff | None = None,
+    debug_packets: bool = False,
+    debug_output: Callable[[str], Any] | None = None,
     health_log_interval_seconds: int = DEFAULT_HEALTH_LOG_INTERVAL_SECONDS,
     retry_seconds: float = DEFAULT_FOREVER_RETRY_SECONDS,
     restart_sleep_seconds: float = DEFAULT_FOREVER_RESTART_SLEEP_SECONDS,
@@ -282,7 +415,11 @@ def start_live_capture_forever(
     totals = {
         "capture_cycles": 0,
         "packets_received": 0,
+        "ignored_packets": 0,
+        "unsupported_packets": 0,
+        "parse_errors": 0,
         "packet_events_processed": 0,
+        "engine_errors": 0,
         "detection_events_processed": 0,
         "traffic_events_processed": 0,
         "errors": 0,
@@ -305,6 +442,8 @@ def start_live_capture_forever(
                 traffic_monitor=traffic_monitor,
                 packet_processor=packet_processor,
                 scapy_sniff=scapy_sniff,
+                debug_packets=debug_packets,
+                debug_output=debug_output,
             )
         except SnifferError as exc:
             totals["errors"] += 1
@@ -326,7 +465,11 @@ def start_live_capture_forever(
 
         totals["capture_cycles"] += 1
         totals["packets_received"] += result.packets_received
+        totals["ignored_packets"] += result.ignored_packets
+        totals["unsupported_packets"] += result.unsupported_packets
+        totals["parse_errors"] += result.parse_errors
         totals["packet_events_processed"] += result.packet_events_processed
+        totals["engine_errors"] += result.engine_errors
         totals["detection_events_processed"] += result.detection_events_processed
         totals["traffic_events_processed"] += result.traffic_events_processed
         totals["errors"] += result.errors
@@ -392,7 +535,9 @@ def _parse_ethernet_frame(frame: bytes, timestamp: float | None = None) -> Packe
     elif ethertype == ETHERTYPE_IPV6:
         ip_origen, ip_destino, protocolo = _parse_ipv6(frame[payload_offset:])
     else:
-        raise SnifferError(f"Unsupported Ethernet ethertype: 0x{ethertype:04x}")
+        raise UnsupportedPacketError(
+            f"Unsupported Ethernet ethertype: 0x{ethertype:04x}"
+        )
 
     return PacketEvent(
         timestamp=_normalize_timestamp(0.0 if timestamp is None else timestamp),
@@ -401,6 +546,7 @@ def _parse_ethernet_frame(frame: bytes, timestamp: float | None = None) -> Packe
         ip_origen=ip_origen,
         ip_destino=ip_destino,
         protocolo=protocolo,
+        link_layer_type=LINK_LAYER_ETHERNET,
     )
 
 
@@ -418,34 +564,40 @@ def _parse_scapy_packet(packet: Any) -> PacketEvent:
     )
     ip_layer = _get_scapy_layer(packet, layers["IP"])
     ipv6_layer = _get_scapy_layer(packet, layers["IPv6"])
+    cooked_layer = _get_scapy_layer(packet, layers.get("CookedLinux"))
+    cooked_v2_layer = _get_scapy_layer(packet, layers.get("CookedLinuxV2"))
+    cooked_source = cooked_layer if cooked_layer is not None else cooked_v2_layer
+    link_layer_type = _scapy_link_layer_type(
+        ether_layer=ether_layer,
+        cooked_layer=cooked_layer,
+        cooked_v2_layer=cooked_v2_layer,
+        ip_layer=ip_layer,
+        ipv6_layer=ipv6_layer,
+    )
 
-    if ether_layer is None and arp_layer is None:
-        raise SnifferError("Scapy packet does not contain an Ethernet layer")
+    if arp_layer is None and ip_layer is None and ipv6_layer is None:
+        raise IgnoredPacketError("Scapy packet does not contain ARP, IPv4, or IPv6")
 
     if arp_layer is not None:
         ip_origen = _normalize_ip(arp_layer.psrc)
         ip_destino = _normalize_ip(arp_layer.pdst)
         protocolo = "ARP"
-        mac_origen = _normalize_mac(
-            getattr(ether_layer, "src", getattr(arp_layer, "hwsrc", ""))
-        )
-        mac_destino = _normalize_mac(
-            getattr(ether_layer, "dst", getattr(arp_layer, "hwdst", ""))
-        )
+        mac_origen = _scapy_source_mac(ether_layer, cooked_source, arp_layer)
+        mac_destino = _scapy_destination_mac(ether_layer, arp_layer)
     elif ip_layer is not None:
         ip_origen = _normalize_ip(ip_layer.src)
         ip_destino = _normalize_ip(ip_layer.dst)
         protocolo = _protocol_name(int(ip_layer.proto))
-        mac_origen = _normalize_mac(ether_layer.src)
-        mac_destino = _normalize_mac(ether_layer.dst)
+        mac_origen = _scapy_source_mac(ether_layer, cooked_source, None)
+        mac_destino = _scapy_destination_mac(ether_layer, None)
     elif ipv6_layer is not None:
         ip_origen = _normalize_ip(ipv6_layer.src)
         ip_destino = _normalize_ip(ipv6_layer.dst)
         protocolo = _protocol_name(int(ipv6_layer.nh))
-        mac_origen = _normalize_mac(ether_layer.src)
-        mac_destino = _normalize_mac(ether_layer.dst)
+        mac_origen = _scapy_source_mac(ether_layer, cooked_source, None)
+        mac_destino = _scapy_destination_mac(ether_layer, None)
     else:
-        raise SnifferError("Scapy packet does not contain IPv4 or IPv6")
+        raise IgnoredPacketError("Scapy packet does not contain ARP, IPv4, or IPv6")
 
     return PacketEvent(
         timestamp=_normalize_timestamp(getattr(packet, "time", 0.0)),
@@ -454,6 +606,7 @@ def _parse_scapy_packet(packet: Any) -> PacketEvent:
         ip_origen=ip_origen,
         ip_destino=ip_destino,
         protocolo=protocolo,
+        link_layer_type=link_layer_type,
     )
 
 
@@ -521,6 +674,51 @@ def _protocol_name(protocol_number: int) -> str:
     return PROTOCOL_NAMES.get(protocol_number, f"IP-{protocol_number}")
 
 
+def _scapy_link_layer_type(
+    *,
+    ether_layer: Any | None,
+    cooked_layer: Any | None,
+    cooked_v2_layer: Any | None,
+    ip_layer: Any | None,
+    ipv6_layer: Any | None,
+) -> str:
+    if ether_layer is not None:
+        return LINK_LAYER_ETHERNET
+    if cooked_layer is not None or cooked_v2_layer is not None:
+        return LINK_LAYER_COOKED_LINUX
+    if ip_layer is not None or ipv6_layer is not None:
+        return LINK_LAYER_RAW_IP
+
+    return LINK_LAYER_UNKNOWN
+
+
+def _scapy_source_mac(
+    ether_layer: Any | None,
+    cooked_layer: Any | None,
+    arp_layer: Any | None,
+) -> str | None:
+    if ether_layer is not None:
+        return _normalize_optional_mac(getattr(ether_layer, "src", None))
+    if cooked_layer is not None:
+        return _normalize_optional_mac(getattr(cooked_layer, "src", None))
+    if arp_layer is not None:
+        return _normalize_optional_mac(getattr(arp_layer, "hwsrc", None))
+
+    return None
+
+
+def _scapy_destination_mac(
+    ether_layer: Any | None,
+    arp_layer: Any | None,
+) -> str | None:
+    if ether_layer is not None:
+        return _normalize_optional_mac(getattr(ether_layer, "dst", None))
+    if arp_layer is not None:
+        return _normalize_optional_mac(getattr(arp_layer, "hwdst", None))
+
+    return None
+
+
 def _required_field(packet: Mapping[str, Any], field_name: str) -> str:
     value = packet.get(field_name)
     if value is None or not str(value).strip():
@@ -565,6 +763,25 @@ def _normalize_mac(value: str) -> str:
     return ":".join(parts)
 
 
+def _normalize_optional_mac(value: Any) -> str | None:
+    if value is None:
+        return None
+
+    if isinstance(value, bytes):
+        if len(value) < 6:
+            return None
+        return _format_mac(value[:6])
+
+    cleaned = str(value).strip()
+    if not cleaned:
+        return None
+
+    try:
+        return _normalize_mac(cleaned)
+    except SnifferError:
+        return None
+
+
 def _normalize_protocol(value: str) -> str:
     protocol = value.strip().upper()
     if not protocol:
@@ -583,12 +800,24 @@ def _format_mac(raw_mac: bytes) -> str:
 def _load_scapy_layers() -> dict[str, Any]:
     from scapy.layers.inet import IP
     from scapy.layers.inet6 import IPv6
+    from scapy.layers import l2
     from scapy.layers.l2 import ARP, Ether
 
-    return {"Ether": Ether, "ARP": ARP, "IP": IP, "IPv6": IPv6}
+    layers: dict[str, Any] = {"Ether": Ether, "ARP": ARP, "IP": IP, "IPv6": IPv6}
+    cooked_linux = getattr(l2, "CookedLinux", None)
+    cooked_linux_v2 = getattr(l2, "CookedLinuxV2", None)
+    if cooked_linux is not None:
+        layers["CookedLinux"] = cooked_linux
+    if cooked_linux_v2 is not None:
+        layers["CookedLinuxV2"] = cooked_linux_v2
+
+    return layers
 
 
 def _get_scapy_layer(packet: Any, layer: Any) -> Any:
+    if layer is None:
+        return None
+
     try:
         if layer in packet:
             return packet[layer]
@@ -596,6 +825,115 @@ def _get_scapy_layer(packet: Any, layer: Any) -> Any:
         return None
 
     return None
+
+
+def _log_live_packet_problem_if_sampled(
+    packet: Any,
+    exc: Exception,
+    *,
+    category: str,
+    logs_emitted: int,
+) -> int:
+    if logs_emitted >= MAX_DIAGNOSTIC_PACKET_LOGS:
+        return logs_emitted
+
+    _LOGGER.warning(
+        "LIVE_CAPTURE | packet_%s | exception_type=%s message=%s summary=%s layers=%s",
+        category,
+        type(exc).__name__,
+        str(exc),
+        _packet_summary(packet),
+        _packet_layers_summary(packet),
+    )
+    return logs_emitted + 1
+
+
+def _log_mac_unavailable_if_sampled(
+    packet: Any,
+    packet_event: PacketEvent,
+    logs_emitted: int,
+) -> int:
+    if logs_emitted >= MAX_DIAGNOSTIC_PACKET_LOGS:
+        return logs_emitted
+
+    _LOGGER.info(
+        "LIVE_CAPTURE | mac_unavailable | link_layer=%s src_mac=%s dst_mac=%s "
+        "summary=%s layers=%s",
+        packet_event.link_layer_type,
+        packet_event.mac_origen or "unknown",
+        packet_event.mac_destino or "unknown",
+        _packet_summary(packet),
+        _packet_layers_summary(packet),
+    )
+    return logs_emitted + 1
+
+
+def _debug_live_packet(
+    enabled: bool,
+    output: Callable[[str], Any] | None,
+    packet: Any,
+    *,
+    status: str,
+    packet_event: PacketEvent | None = None,
+    error: Exception | None = None,
+) -> None:
+    if not enabled:
+        return
+
+    writer = output or _LOGGER.info
+    generated_event = packet_event is not None
+    ignored = status == "ignored"
+    link_layer = (
+        packet_event.link_layer_type
+        if packet_event is not None
+        else _packet_layers_summary(packet)
+    )
+    parts = [
+        "DEBUG_PACKET",
+        f"status={status}",
+        f"summary={_packet_summary(packet)}",
+        f"layers={_packet_layers_summary(packet)}",
+        f"link_layer={link_layer}",
+        f"packet_event={'yes' if generated_event else 'no'}",
+        f"ignored={'yes' if ignored else 'no'}",
+    ]
+    if error is not None:
+        parts.append(f"exception_type={type(error).__name__}")
+        parts.append(f"cause={str(error)}")
+    writer(" | ".join(parts))
+
+
+def _packet_summary(packet: Any) -> str:
+    try:
+        summary = packet.summary()
+    except Exception:
+        summary = packet.__class__.__name__
+
+    return _truncate_diagnostic_text(str(summary))
+
+
+def _packet_layers_summary(packet: Any) -> str:
+    try:
+        layers = packet.layers()
+    except Exception:
+        return packet.__class__.__name__
+
+    layer_names: list[str] = []
+    for layer in layers:
+        layer_names.append(getattr(layer, "__name__", str(layer)))
+
+    if not layer_names:
+        return packet.__class__.__name__
+
+    return ">".join(layer_names)
+
+
+def _truncate_diagnostic_text(value: str) -> str:
+    cleaned = " ".join(value.replace("\r", " ").replace("\n", " ").split())
+    if len(cleaned) <= DEBUG_PACKET_SUMMARY_LIMIT:
+        return cleaned
+
+    return f"{cleaned[:DEBUG_PACKET_SUMMARY_LIMIT]}..."
 
 
 def _validate_interface(interface: str) -> str:
@@ -677,12 +1015,17 @@ def _log_forever_health(
     totals: Mapping[str, int],
 ) -> None:
     logger.info(
-        "LIVE_CAPTURE_HEALTH | interface=%s cycles=%s received=%s packet_events=%s "
+        "LIVE_CAPTURE_HEALTH | interface=%s cycles=%s received=%s ignored=%s "
+        "unsupported=%s parse_errors=%s packet_events=%s engine_errors=%s "
         "detections=%s dns_http_events=%s errors=%s",
         interface,
         totals["capture_cycles"],
         totals["packets_received"],
+        totals["ignored_packets"],
+        totals["unsupported_packets"],
+        totals["parse_errors"],
         totals["packet_events_processed"],
+        totals["engine_errors"],
         totals["detection_events_processed"],
         totals["traffic_events_processed"],
         totals["errors"],
