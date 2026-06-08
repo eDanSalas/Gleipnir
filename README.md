@@ -70,15 +70,10 @@ Variables operativas principales:
 - `MAX_LOG_SIZE_MB=50`: tamano maximo por archivo de log antes de rotar.
 - `MAX_REPORTS_TO_KEEP=20`: cantidad maxima de archivos de reporte generados.
 - `DASHBOARD_AUTH_ENABLED=true`: protege el dashboard con login y sesion local.
-- `DASHBOARD_USERNAME=`: usuario local para el dashboard.
-- `DASHBOARD_PASSWORD=`: contrasena local del dashboard, nunca guardarla en
-  codigo.
-- `DASHBOARD_ROLE=viewer`: rol del usuario principal; usar `viewer` para solo
-  visualizacion o `admin` para administrar listas.
-- `DASHBOARD_ADMIN_USERNAME=` y `DASHBOARD_ADMIN_PASSWORD=`: credenciales
-  opcionales para un usuario admin separado.
 - `DASHBOARD_SECRET_KEY=`: clave local larga para firmar sesion y proteger
   formularios administrativos contra CSRF.
+- `DASHBOARD_USERS_FILE=data/dashboard_users.json`: archivo local de usuarios
+  del dashboard con hashes de contrasena no reversibles.
 - `DASHBOARD_SESSION_COOKIE_SECURE=false`: cambiar a `true` si se usa HTTPS.
 - `DASHBOARD_SESSION_TIMEOUT_MINUTES=30`: minutos antes de expirar la sesion
   web.
@@ -127,11 +122,9 @@ Para el dashboard web 24/7, `deploy/systemd/gleipnir-dashboard.service` ejecuta:
 ```
 
 Este servicio tambien carga `/opt/gleipnir/.env`. Al exponer el dashboard en red
-local con `0.0.0.0`, mantener `DASHBOARD_AUTH_ENABLED=true` y configurar
-`DASHBOARD_USERNAME`, `DASHBOARD_PASSWORD`, `DASHBOARD_ROLE` y, si se administran
-listas desde navegador, `DASHBOARD_ADMIN_USERNAME` y
-`DASHBOARD_ADMIN_PASSWORD`. Ver
-`docs/dashboard_service.md`.
+local con `0.0.0.0`, mantener `DASHBOARD_AUTH_ENABLED=true`, definir
+`DASHBOARD_SECRET_KEY` y crear `DASHBOARD_USERS_FILE` con usuarios `viewer` o
+`admin` y `password_hash`. Ver `docs/dashboard_service.md`.
 
 ## CLI
 
@@ -202,15 +195,42 @@ Para proteger el dashboard, configurar en `.env`:
 
 ```bash
 DASHBOARD_AUTH_ENABLED=true
-DASHBOARD_USERNAME=viewer-local
-DASHBOARD_PASSWORD=<CONTRASENA_VIEWER>
-DASHBOARD_ROLE=viewer
-DASHBOARD_ADMIN_USERNAME=admin-local
-DASHBOARD_ADMIN_PASSWORD=<CONTRASENA_ADMIN>
 DASHBOARD_SECRET_KEY=<CLAVE_LARGA_ALEATORIA>
+DASHBOARD_USERS_FILE=data/dashboard_users.json
 DASHBOARD_SESSION_COOKIE_SECURE=false
 DASHBOARD_SESSION_TIMEOUT_MINUTES=30
 ```
+
+Los usuarios ya no se guardan en `.env`. Se guardan en el archivo indicado por
+`DASHBOARD_USERS_FILE`, usando hashes seguros no reversibles:
+
+```json
+[
+  {
+    "username": "admin",
+    "password_hash": "<HASH_GENERADO>",
+    "role": "admin",
+    "enabled": true,
+    "created_at": "2026-06-07T00:00:00Z"
+  }
+]
+```
+
+Para generar un hash sin mostrar la contrasena en pantalla:
+
+```bash
+python - <<'PY'
+from getpass import getpass
+from werkzeug.security import generate_password_hash
+print(generate_password_hash(getpass("Contrasena del dashboard: ")))
+PY
+```
+
+No versionar `data/dashboard_users.json`. Las variables antiguas
+`DASHBOARD_USERNAME`, `DASHBOARD_PASSWORD`, `DASHBOARD_ROLE`,
+`DASHBOARD_ADMIN_USERNAME` y `DASHBOARD_ADMIN_PASSWORD` estan deprecadas; si
+siguen presentes, Gleipnir muestra advertencia y no las usa por defecto para
+autenticar.
 
 Si `DASHBOARD_AUTH_ENABLED=false`, el dashboard permite acceso sin login. Al
 usar `--host 0.0.0.0`, mantener la autenticacion activa. Con autenticacion

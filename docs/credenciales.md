@@ -26,8 +26,6 @@ Variables sensibles:
 - `SMTP_PASSWORD`
 - `ABUSEIPDB_API_KEY`
 - `VIRUSTOTAL_API_KEY`
-- `DASHBOARD_PASSWORD`
-- `DASHBOARD_ADMIN_PASSWORD`
 - `DASHBOARD_SECRET_KEY`
 
 Variables operativas no secretas:
@@ -52,24 +50,19 @@ Variables operativas no secretas:
 - `MAX_LOG_SIZE_MB`
 - `MAX_REPORTS_TO_KEEP`
 - `DASHBOARD_AUTH_ENABLED`
-- `DASHBOARD_USERNAME`
-- `DASHBOARD_ROLE`
-- `DASHBOARD_ADMIN_USERNAME`
+- `DASHBOARD_USERS_FILE`
 - `DASHBOARD_SESSION_COOKIE_SECURE`
 - `DASHBOARD_SESSION_TIMEOUT_MINUTES`
 
 ## Credenciales del dashboard
 
-El dashboard usa variables de `.env` para autenticacion:
+El dashboard usa `.env` para activar autenticacion, definir la clave de sesion y
+apuntar al archivo local de usuarios:
 
 ```env
 DASHBOARD_AUTH_ENABLED=true
-DASHBOARD_USERNAME=viewer-local
-DASHBOARD_PASSWORD=<CONTRASENA_VIEWER>
-DASHBOARD_ROLE=viewer
-DASHBOARD_ADMIN_USERNAME=admin-local
-DASHBOARD_ADMIN_PASSWORD=<CONTRASENA_ADMIN>
 DASHBOARD_SECRET_KEY=<CLAVE_LARGA_ALEATORIA>
+DASHBOARD_USERS_FILE=data/dashboard_users.json
 DASHBOARD_SESSION_COOKIE_SECURE=false
 DASHBOARD_SESSION_TIMEOUT_MINUTES=30
 ```
@@ -77,6 +70,28 @@ DASHBOARD_SESSION_TIMEOUT_MINUTES=30
 `DASHBOARD_SECRET_KEY` firma la sesion Flask y los tokens CSRF. Debe ser largo,
 aleatorio y distinto por entorno. No debe guardarse en Git ni compartirse en
 capturas de pantalla.
+
+Las contrasenas de usuarios del dashboard no se guardan en `.env`. Deben
+convertirse en hashes no reversibles con Werkzeug y guardarse en
+`DASHBOARD_USERS_FILE`:
+
+```json
+[
+  {
+    "username": "admin",
+    "password_hash": "<HASH_GENERADO>",
+    "role": "admin",
+    "enabled": true,
+    "created_at": "2026-06-07T00:00:00Z"
+  }
+]
+```
+
+El hash no permite recuperar la contrasena original; solo permite verificarla.
+No subir `data/dashboard_users.json` al repositorio. Las variables antiguas
+`DASHBOARD_USERNAME`, `DASHBOARD_PASSWORD`, `DASHBOARD_ROLE`,
+`DASHBOARD_ADMIN_USERNAME` y `DASHBOARD_ADMIN_PASSWORD` estan deprecadas y no se
+usan por defecto para autenticar.
 
 Roles:
 
@@ -213,7 +228,9 @@ como `ALERT_SENT` o `ALERT_SUPPRESSED` y no deben incluir credenciales.
 - `.env` no versionado.
 - `.env` con permisos `600`.
 - `DASHBOARD_SECRET_KEY` definido si `DASHBOARD_AUTH_ENABLED=true`.
-- Passwords reales solo en el equipo de despliegue.
+- `DASHBOARD_USERS_FILE` creado localmente con `password_hash`, no contrasenas
+  en texto plano.
+- Passwords reales solo en el equipo de despliegue y nunca en Git.
 - No publicar logs, reportes, SQLite ni capturas de pantalla con datos
   sensibles.
 - Rotar passwords/API keys al terminar la demo si se usaron valores reales.

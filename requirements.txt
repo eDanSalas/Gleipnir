@@ -18,6 +18,7 @@ python-json-logger
 
 # Local web dashboard
 Flask
+Werkzeug
 
 # Tests
 pytest

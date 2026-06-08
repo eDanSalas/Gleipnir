@@ -8,6 +8,7 @@ import ipaddress
 import json
 import secrets
 import time as time_module
+import warnings
 from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime, time, timedelta, timezone
@@ -15,6 +16,11 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from src import blacklist, whitelist
+from src.dashboard.auth import (
+    DashboardAuthError,
+    authenticate_dashboard_user,
+    load_dashboard_users,
+)
 from src.detector import AUTHORIZED_DEVICE, BLACKLISTED_EXTERNAL_IP, UNAUTHORIZED_DEVICE
 from src.storage import (
     ALERT_SENT,
@@ -66,6 +72,7 @@ DASHBOARD_CONTENT_SECURITY_POLICY = (
 REDACTED_VALUE = "[REDACTED]"
 SECRET_FIELD_HINTS = (
     "password",
+    "password_hash",
     "passwd",
     "pwd",
     "api_key",
@@ -330,21 +337,29 @@ def _validate_dashboard_auth_settings(config: Any) -> None:
     if not _dashboard_auth_enabled(config):
         return
 
-    if not _dashboard_username(config) or not _dashboard_password(config):
-        raise DashboardError(
-            "Dashboard authentication is enabled. Set DASHBOARD_USERNAME and "
-            "DASHBOARD_PASSWORD in .env."
-        )
     if not _dashboard_secret_key(config):
         raise DashboardError(
             "Dashboard authentication is enabled. Set DASHBOARD_SECRET_KEY in .env "
             "to protect administrative forms against CSRF."
         )
-    if _has_partial_admin_credentials(config):
-        raise DashboardError(
-            "Set both DASHBOARD_ADMIN_USERNAME and DASHBOARD_ADMIN_PASSWORD, or "
-            "leave both empty."
+
+    if _has_deprecated_dashboard_credentials(config):
+        warnings.warn(
+            "DASHBOARD_USERNAME, DASHBOARD_PASSWORD, DASHBOARD_ROLE, "
+            "DASHBOARD_ADMIN_USERNAME and DASHBOARD_ADMIN_PASSWORD are deprecated "
+            "and ignored by default. Use DASHBOARD_USERS_FILE with password_hash "
+            "entries instead.",
+            RuntimeWarning,
+            stacklevel=2,
         )
+
+    try:
+        load_dashboard_users(_dashboard_users_file(config))
+    except DashboardAuthError as exc:
+        raise DashboardError(
+            "Dashboard authentication is enabled. Configure DASHBOARD_USERS_FILE "
+            "with enabled users and password_hash values."
+        ) from exc
 
 
 def _configure_dashboard_session(app: Any, config: Any) -> None:
@@ -423,20 +438,17 @@ def _role_for_credentials(
     provided_username: str,
     provided_password: str,
 ) -> str | None:
-    if _credentials_match(
-        provided_username,
-        provided_password,
-        _dashboard_username(config),
-        _dashboard_password(config),
-    ):
-        return _dashboard_role(config)
-    if _credentials_match(
-        provided_username,
-        provided_password,
-        _dashboard_admin_username(config),
-        _dashboard_admin_password(config),
-    ):
-        return "admin"
+    try:
+        user = authenticate_dashboard_user(
+            _dashboard_users_file(config),
+            provided_username,
+            provided_password,
+        )
+    except DashboardAuthError:
+        return None
+
+    if user is not None:
+        return user.role
 
     return None
 
@@ -451,21 +463,6 @@ def _establish_dashboard_session(username: str, role: str) -> None:
 
 def _clear_dashboard_session() -> None:
     session.clear()
-
-
-def _credentials_match(
-    provided_username: str,
-    provided_password: str,
-    expected_username: str | None,
-    expected_password: str | None,
-) -> bool:
-    if expected_username is None or expected_password is None:
-        return False
-
-    return _safe_compare(provided_username, expected_username) and _safe_compare(
-        provided_password,
-        expected_password,
-    )
 
 
 def _dashboard_login_required_response() -> Any:
@@ -484,51 +481,35 @@ def _dashboard_auth_enabled(config: Any) -> bool:
     return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
 
 
-def _dashboard_username(config: Any) -> str | None:
-    username = getattr(config, "dashboard_username", None)
-    if username is None:
-        return None
-
-    cleaned = str(username).strip()
-    return cleaned or None
+def _dashboard_users_file(config: Any) -> Path:
+    return Path(
+        getattr(config, "dashboard_users_file", "data/dashboard_users.json")
+        or "data/dashboard_users.json"
+    ).expanduser()
 
 
-def _dashboard_password(config: Any) -> str | None:
-    password = getattr(config, "dashboard_password", None)
-    if password is None:
-        return None
+def _has_deprecated_dashboard_credentials(config: Any) -> bool:
+    deprecated_env_vars = getattr(config, "deprecated_dashboard_env_vars", None)
+    if deprecated_env_vars is not None:
+        return bool(deprecated_env_vars)
 
-    cleaned = str(password).strip()
-    return cleaned or None
-
-
-def _dashboard_role(config: Any) -> str:
-    role = str(getattr(config, "dashboard_role", "viewer") or "viewer").strip().lower()
-    return role if role in {"viewer", "admin"} else "viewer"
-
-
-def _dashboard_admin_username(config: Any) -> str | None:
-    username = getattr(config, "dashboard_admin_username", None)
-    if username is None:
-        return None
-
-    cleaned = str(username).strip()
-    return cleaned or None
-
-
-def _dashboard_admin_password(config: Any) -> str | None:
-    password = getattr(config, "dashboard_admin_password", None)
-    if password is None:
-        return None
-
-    cleaned = str(password).strip()
-    return cleaned or None
-
-
-def _has_partial_admin_credentials(config: Any) -> bool:
-    return bool(_dashboard_admin_username(config)) != bool(
-        _dashboard_admin_password(config)
+    return any(
+        _clean_config_value(getattr(config, name, None))
+        for name in (
+            "dashboard_username",
+            "dashboard_password",
+            "dashboard_admin_username",
+            "dashboard_admin_password",
+        )
     )
+
+
+def _clean_config_value(value: Any) -> str | None:
+    if value is None:
+        return None
+
+    cleaned = str(value).strip()
+    return cleaned or None
 
 
 def _dashboard_secret_key(config: Any) -> str | None:

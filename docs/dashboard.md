@@ -104,12 +104,8 @@ Activar autenticacion:
 
 ```env
 DASHBOARD_AUTH_ENABLED=true
-DASHBOARD_USERNAME=viewer-local
-DASHBOARD_PASSWORD=<CONTRASENA_VIEWER>
-DASHBOARD_ROLE=viewer
-DASHBOARD_ADMIN_USERNAME=admin-local
-DASHBOARD_ADMIN_PASSWORD=<CONTRASENA_ADMIN>
 DASHBOARD_SECRET_KEY=<CLAVE_LARGA_ALEATORIA>
+DASHBOARD_USERS_FILE=data/dashboard_users.json
 DASHBOARD_SESSION_COOKIE_SECURE=false
 DASHBOARD_SESSION_TIMEOUT_MINUTES=30
 ```
@@ -118,22 +114,58 @@ Desactivar autenticacion:
 
 ```env
 DASHBOARD_AUTH_ENABLED=false
-DASHBOARD_USERNAME=
-DASHBOARD_PASSWORD=
-DASHBOARD_ROLE=viewer
-DASHBOARD_ADMIN_USERNAME=
-DASHBOARD_ADMIN_PASSWORD=
 DASHBOARD_SECRET_KEY=
+DASHBOARD_USERS_FILE=data/dashboard_users.json
 DASHBOARD_SESSION_COOKIE_SECURE=false
 DASHBOARD_SESSION_TIMEOUT_MINUTES=30
 ```
 
-Con la autenticacion activa, la contrasena no se muestra en la interfaz ni se
-registra en logs. Las credenciales se comparan con una comparacion segura de
-tiempo constante. Ademas, se habilita `/admin/lists` para administracion manual
-de listas. Si `DASHBOARD_AUTH_ENABLED=true`, `DASHBOARD_SECRET_KEY` tambien es
-obligatorio para firmar la sesion Flask y proteger formularios administrativos
-contra CSRF.
+Con la autenticacion activa, las contrasenas de usuarios no se guardan en `.env`.
+Los usuarios se cargan desde `DASHBOARD_USERS_FILE`, por defecto
+`data/dashboard_users.json`, y cada entrada debe contener un `password_hash`
+seguro no reversible. El hash se verifica con Werkzeug; no se desencripta ni se
+devuelve en vistas del dashboard.
+
+Formato del archivo de usuarios:
+
+```json
+[
+  {
+    "username": "admin",
+    "password_hash": "<HASH_GENERADO>",
+    "role": "admin",
+    "enabled": true,
+    "created_at": "2026-06-07T00:00:00Z"
+  },
+  {
+    "username": "viewer",
+    "password_hash": "<HASH_GENERADO>",
+    "role": "viewer",
+    "enabled": true,
+    "created_at": "2026-06-07T00:00:00Z"
+  }
+]
+```
+
+Para generar un hash:
+
+```bash
+python - <<'PY'
+from getpass import getpass
+from werkzeug.security import generate_password_hash
+print(generate_password_hash(getpass("Contrasena del dashboard: ")))
+PY
+```
+
+`data/dashboard_users.json` no debe versionarse. Las variables antiguas
+`DASHBOARD_USERNAME`, `DASHBOARD_PASSWORD`, `DASHBOARD_ROLE`,
+`DASHBOARD_ADMIN_USERNAME` y `DASHBOARD_ADMIN_PASSWORD` estan deprecadas; si
+existen en `.env`, Gleipnir muestra una advertencia clara y no las usa por
+defecto para autenticar.
+
+Ademas, se habilita `/admin/lists` para administracion manual de listas. Si
+`DASHBOARD_AUTH_ENABLED=true`, `DASHBOARD_SECRET_KEY` tambien es obligatorio
+para firmar la sesion Flask y proteger formularios administrativos contra CSRF.
 
 `DASHBOARD_SESSION_TIMEOUT_MINUTES` define los minutos de vida de la sesion web.
 `DASHBOARD_SESSION_COOKIE_SECURE=false` permite uso local por HTTP; cambiarlo a
@@ -146,9 +178,8 @@ Roles disponibles:
 - `admin`: puede hacer lo anterior y tambien administrar whitelist y blacklist
   en `/admin/lists`.
 
-Si solo se usa `DASHBOARD_USERNAME` y `DASHBOARD_PASSWORD`, su permiso se define
-con `DASHBOARD_ROLE`. Si se configuran `DASHBOARD_ADMIN_USERNAME` y
-`DASHBOARD_ADMIN_PASSWORD`, esas credenciales siempre tienen rol `admin`.
+El rol se define por usuario dentro de `dashboard_users.json`. Los usuarios con
+`enabled=false` no pueden iniciar sesion aunque su contrasena sea correcta.
 
 Limitaciones:
 

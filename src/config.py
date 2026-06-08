@@ -55,6 +55,9 @@ class Config:
     max_log_size_mb: int = 50
     max_reports_to_keep: int = 20
     dashboard_auth_enabled: bool = False
+    dashboard_users_file: Path = field(
+        default_factory=lambda: Path("data/dashboard_users.json")
+    )
     dashboard_username: str | None = None
     dashboard_password: str | None = field(default=None, repr=False)
     dashboard_role: str = "viewer"
@@ -63,6 +66,7 @@ class Config:
     dashboard_secret_key: str | None = field(default=None, repr=False)
     dashboard_session_cookie_secure: bool = False
     dashboard_session_timeout_minutes: int = 30
+    deprecated_dashboard_env_vars: tuple[str, ...] = ()
 
     def as_redacted_dict(self) -> dict[str, str | int | float | None]:
         """Return a safe representation for diagnostics without secrets."""
@@ -90,6 +94,7 @@ class Config:
             "max_log_size_mb": self.max_log_size_mb,
             "max_reports_to_keep": self.max_reports_to_keep,
             "dashboard_auth_enabled": self.dashboard_auth_enabled,
+            "dashboard_users_file": str(self.dashboard_users_file),
             "dashboard_username": self.dashboard_username,
             "dashboard_password": "***" if self.dashboard_password else None,
             "dashboard_role": self.dashboard_role,
@@ -102,6 +107,7 @@ class Config:
             "dashboard_session_timeout_minutes": (
                 self.dashboard_session_timeout_minutes
             ),
+            "deprecated_dashboard_env_vars": self.deprecated_dashboard_env_vars,
         }
 
 
@@ -197,14 +203,12 @@ def load_config(
             "DASHBOARD_AUTH_ENABLED",
             default=False,
         ),
+        dashboard_users_file=Path(
+            _optional(values, "DASHBOARD_USERS_FILE") or "data/dashboard_users.json"
+        ).expanduser(),
         dashboard_username=_optional(values, "DASHBOARD_USERNAME"),
         dashboard_password=_optional(values, "DASHBOARD_PASSWORD"),
-        dashboard_role=_optional_choice(
-            values,
-            "DASHBOARD_ROLE",
-            default="viewer",
-            choices=("viewer", "admin"),
-        ),
+        dashboard_role=_optional(values, "DASHBOARD_ROLE") or "viewer",
         dashboard_admin_username=_optional(values, "DASHBOARD_ADMIN_USERNAME"),
         dashboard_admin_password=_optional(values, "DASHBOARD_ADMIN_PASSWORD"),
         dashboard_secret_key=_optional(values, "DASHBOARD_SECRET_KEY"),
@@ -219,6 +223,7 @@ def load_config(
             default=30,
             minimum=1,
         ),
+        deprecated_dashboard_env_vars=_deprecated_dashboard_env_vars(values),
     )
 
 
@@ -346,3 +351,17 @@ def _optional_choice(
         raise ConfigError(f"{name} must be one of: {allowed}")
 
     return normalized
+
+
+def _deprecated_dashboard_env_vars(values: Mapping[str, str]) -> tuple[str, ...]:
+    return tuple(
+        name
+        for name in (
+            "DASHBOARD_USERNAME",
+            "DASHBOARD_PASSWORD",
+            "DASHBOARD_ROLE",
+            "DASHBOARD_ADMIN_USERNAME",
+            "DASHBOARD_ADMIN_PASSWORD",
+        )
+        if _optional(values, name)
+    )

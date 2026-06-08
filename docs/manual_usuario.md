@@ -62,12 +62,57 @@ mkdir -p data logs logs/reports
 
 ## 4. Configuracion con .env
 
-Copiar la plantilla:
+Copiar la plantilla en el equipo donde se ejecutara Gleipnir:
 
 ```bash
 cp .env.example .env
 chmod 600 .env
 ```
+
+En Ubuntu Server, si el proyecto se instala en `/opt/gleipnir`, usar la misma
+idea desde ese directorio:
+
+```bash
+cd /opt/gleipnir
+sudo cp .env.example .env
+sudo nano .env
+sudo chmod 600 .env
+```
+
+Si el servicio `systemd` corre como `root`, el archivo puede quedar propiedad de
+`root`. Si se ejecuta con un usuario dedicado, ese usuario debe poder leer
+`/opt/gleipnir/.env`. No guardar secretos en el archivo `.service`; el servicio
+debe leerlos desde `EnvironmentFile=/opt/gleipnir/.env`.
+
+### Uso de valores entre llaves `{...}`
+
+En esta guia, un valor escrito como `{VALOR}` significa "reemplace esto por el
+valor real del entorno". Las llaves son un marcador visual; no son obligatorias
+dentro del archivo `.env`.
+
+Ejemplo de marcador:
+
+```env
+SMTP_HOST={SERVIDOR_SMTP}
+```
+
+Ejemplo ya configurado:
+
+```env
+SMTP_HOST=smtp.gmail.com
+```
+
+Para contrasenas, tokens o claves, usar valores reales solo en el equipo de
+despliegue. No pegarlos en documentacion, capturas de pantalla ni repositorios.
+Si se edita `.env` mientras los servicios estan activos, reiniciarlos para que
+lean la configuracion nueva:
+
+```bash
+sudo systemctl restart gleipnir
+sudo systemctl restart gleipnir-dashboard
+```
+
+### Plantilla base
 
 Editar `.env` con valores reales solo en el equipo de despliegue:
 
@@ -100,15 +145,90 @@ MAX_LOG_SIZE_MB=50
 MAX_REPORTS_TO_KEEP=20
 
 DASHBOARD_AUTH_ENABLED=true
-DASHBOARD_USERNAME=viewer-local
-DASHBOARD_PASSWORD=<CONTRASENA_VIEWER>
-DASHBOARD_ROLE=viewer
-DASHBOARD_ADMIN_USERNAME=admin-local
-DASHBOARD_ADMIN_PASSWORD=<CONTRASENA_ADMIN>
 DASHBOARD_SECRET_KEY=<CLAVE_LARGA_ALEATORIA>
+DASHBOARD_USERS_FILE=data/dashboard_users.json
 DASHBOARD_SESSION_COOKIE_SECURE=false
 DASHBOARD_SESSION_TIMEOUT_MINUTES=30
 ```
+
+### Que va en cada variable
+
+| Variable | Obligatoria | Que debe contener |
+| --- | --- | --- |
+| `SMTP_HOST` | Si | Host o IP del servidor SMTP, por ejemplo `{SERVIDOR_SMTP}`. |
+| `SMTP_PORT` | Si | Puerto SMTP numerico. Normalmente `587` para TLS/STARTTLS. |
+| `SMTP_USER` | Si | Usuario/cuenta SMTP que enviara alertas, por ejemplo `{CUENTA_ALERTAS}`. |
+| `SMTP_PASSWORD` | Si | Contrasena o password de aplicacion de la cuenta SMTP. Es secreto. |
+| `ADMIN_EMAIL` | Si | Correo del administrador que recibira alertas del IDS. |
+| `WHITELIST_FILE` | Si | Ruta del CSV de lista blanca, por ejemplo `data/whitelist.csv`. |
+| `BLACKLIST_FILE` | Si | Ruta del TXT de lista negra, por ejemplo `data/blacklist.txt`. |
+| `LOG_DIR` | Si | Directorio donde Gleipnir escribira logs y cache operativo, por ejemplo `logs/`. |
+| `REPORT_DIR` | No | Directorio de reportes JSON/CSV. Si se omite, se usa `LOG_DIR`. |
+| `IDS_DB_PATH` | No | Ruta de la base SQLite de eventos, por ejemplo `data/gleipnir_events.db`. |
+| `ABUSEIPDB_API_KEY` | No | API key de AbuseIPDB para threat intelligence. Dejar vacia si no se usara. |
+| `VIRUSTOTAL_API_KEY` | No | API key de VirusTotal. Dejar vacia si no se usara. |
+| `THREAT_INTEL_TIMEOUT_SECONDS` | No | Tiempo maximo de espera para APIs externas. Valor recomendado: `10`. |
+| `THREAT_INTEL_CACHE_TTL_SECONDS` | No | Tiempo de vida del cache de threat intelligence en segundos. `86400` equivale a 24 horas. |
+| `ALERT_COOLDOWN_SECONDS` | No | Segundos para evitar correos repetidos del mismo evento. Valor recomendado: `300`. |
+| `ALERT_MAX_PER_MINUTE` | No | Maximo de alertas por correo permitidas por minuto. Valor recomendado: `5`. |
+| `GLEIPNIR_INTERFACE` | No | Interfaz esperada para captura live, por ejemplo `{INTERFAZ}` como `wlan0`, `eth0` o `ens33`. |
+| `GLEIPNIR_MODE` | No | Modo operativo esperado: `offline`, `replay` o `live`. |
+| `HEALTH_LOG_INTERVAL_SECONDS` | No | Intervalo de logs de salud en modo `live --forever`. Valor recomendado: `300`. |
+| `EVENT_RETENTION_DAYS` | No | Dias que se conservan eventos en SQLite antes de mantenimiento. |
+| `MAX_LOG_SIZE_MB` | No | Tamano maximo esperado para rotacion/validacion de logs, en MB. |
+| `MAX_REPORTS_TO_KEEP` | No | Cantidad maxima de reportes generados que se conservaran. |
+| `DASHBOARD_AUTH_ENABLED` | No | `true` para exigir login en dashboard; `false` solo para laboratorio local controlado. |
+| `DASHBOARD_SECRET_KEY` | Si se activa auth | Clave larga y aleatoria para firmar sesion y tokens CSRF. Es secreto. |
+| `DASHBOARD_USERS_FILE` | Si se activa auth | Ruta del JSON local de usuarios del dashboard con `password_hash`, por ejemplo `data/dashboard_users.json`. |
+| `DASHBOARD_SESSION_COOKIE_SECURE` | No | `false` en HTTP local; `true` cuando se usa HTTPS con reverse proxy. |
+| `DASHBOARD_SESSION_TIMEOUT_MINUTES` | No | Minutos antes de expirar la sesion del dashboard. Valor recomendado: `30`. |
+
+Variables booleanas como `DASHBOARD_AUTH_ENABLED` y
+`DASHBOARD_SESSION_COOKIE_SECURE` aceptan valores como `true` o `false`.
+Variables numericas como `SMTP_PORT`, `EVENT_RETENTION_DAYS` y
+`ALERT_MAX_PER_MINUTE` deben contener solo numeros.
+
+### Usuarios del dashboard con hashes
+
+Las contrasenas del dashboard no deben guardarse en `.env`. El archivo indicado
+por `DASHBOARD_USERS_FILE` debe contener usuarios con hashes seguros no
+reversibles:
+
+```json
+[
+  {
+    "username": "admin",
+    "password_hash": "<HASH_GENERADO>",
+    "role": "admin",
+    "enabled": true,
+    "created_at": "2026-06-07T00:00:00Z"
+  },
+  {
+    "username": "viewer",
+    "password_hash": "<HASH_GENERADO>",
+    "role": "viewer",
+    "enabled": true,
+    "created_at": "2026-06-07T00:00:00Z"
+  }
+]
+```
+
+Generar cada hash en Ubuntu:
+
+```bash
+python - <<'PY'
+from getpass import getpass
+from werkzeug.security import generate_password_hash
+print(generate_password_hash(getpass("Contrasena del dashboard: ")))
+PY
+```
+
+Copiar el resultado en `password_hash`. No copiar la contrasena real en el JSON.
+No subir `data/dashboard_users.json` al repositorio. Las variables antiguas
+`DASHBOARD_USERNAME`, `DASHBOARD_PASSWORD`, `DASHBOARD_ROLE`,
+`DASHBOARD_ADMIN_USERNAME` y `DASHBOARD_ADMIN_PASSWORD` estan deprecadas; si se
+mantienen en `.env`, Gleipnir advierte que debe usarse `DASHBOARD_USERS_FILE` y
+no las usa por defecto para autenticar.
 
 No subir `.env` al repositorio. La configuracion se valida con:
 
@@ -306,8 +426,10 @@ Si `DASHBOARD_AUTH_ENABLED=false`, la CLI bloquea `0.0.0.0` salvo con
 Autenticacion:
 
 - `DASHBOARD_AUTH_ENABLED=true` activa login y sesion.
+- `DASHBOARD_USERS_FILE` apunta al JSON local de usuarios con `password_hash`.
 - `viewer` puede ver dashboard, eventos, filtros y graficas.
 - `admin` puede administrar whitelist/blacklist en `/admin/lists`.
+- Los usuarios con `enabled=false` no pueden iniciar sesion.
 - `DASHBOARD_SECRET_KEY` firma sesion y tokens CSRF.
 - `DASHBOARD_SESSION_TIMEOUT_MINUTES` controla expiracion de sesion.
 - `DASHBOARD_SESSION_COOKIE_SECURE=true` debe usarse cuando hay HTTPS.

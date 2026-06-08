@@ -71,12 +71,8 @@ LOG_DIR=logs/
 REPORT_DIR=logs/reports/
 IDS_DB_PATH=data/gleipnir_events.db
 DASHBOARD_AUTH_ENABLED=true
-DASHBOARD_USERNAME=viewer-local
-DASHBOARD_PASSWORD=<CONTRASENA_VIEWER>
-DASHBOARD_ROLE=viewer
-DASHBOARD_ADMIN_USERNAME=admin-local
-DASHBOARD_ADMIN_PASSWORD=<CONTRASENA_ADMIN>
 DASHBOARD_SECRET_KEY=<CLAVE_LARGA_ALEATORIA>
+DASHBOARD_USERS_FILE=data/dashboard_users.json
 DASHBOARD_SESSION_COOKIE_SECURE=false
 DASHBOARD_SESSION_TIMEOUT_MINUTES=30
 ```
@@ -99,31 +95,42 @@ disponible desde la red local por IP y puerto. Mantener autenticacion activa:
 
 ```env
 DASHBOARD_AUTH_ENABLED=true
-DASHBOARD_USERNAME=viewer-local
-DASHBOARD_PASSWORD=<CONTRASENA_VIEWER>
-DASHBOARD_ROLE=viewer
-DASHBOARD_ADMIN_USERNAME=admin-local
-DASHBOARD_ADMIN_PASSWORD=<CONTRASENA_ADMIN>
 DASHBOARD_SECRET_KEY=<CLAVE_LARGA_ALEATORIA>
+DASHBOARD_USERS_FILE=data/dashboard_users.json
 DASHBOARD_SESSION_COOKIE_SECURE=false
 DASHBOARD_SESSION_TIMEOUT_MINUTES=30
 ```
 
-No dejar `DASHBOARD_USERNAME`, `DASHBOARD_PASSWORD` ni `DASHBOARD_SECRET_KEY`
-vacios si `DASHBOARD_AUTH_ENABLED=true`; el dashboard no debe arrancar con
-autenticacion incompleta ni sin proteccion CSRF para formularios
-administrativos. Si se usan credenciales admin separadas, configurar
-`DASHBOARD_ADMIN_USERNAME` y `DASHBOARD_ADMIN_PASSWORD` juntas.
+No dejar `DASHBOARD_SECRET_KEY` vacio si `DASHBOARD_AUTH_ENABLED=true`; el
+dashboard no debe arrancar sin proteccion CSRF para formularios administrativos.
+Tambien se debe crear el archivo indicado por `DASHBOARD_USERS_FILE` con al
+menos un usuario habilitado y `password_hash`.
 `DASHBOARD_SESSION_TIMEOUT_MINUTES` controla la expiracion de sesion.
 `DASHBOARD_SESSION_COOKIE_SECURE=false` permite uso HTTP local; cambiarlo a
 `true` si se usa HTTPS mediante reverse proxy.
 
 Roles:
 
-- `DASHBOARD_ROLE=viewer`: recomendado para visualizacion.
-- `DASHBOARD_ROLE=admin`: permite que el usuario principal administre listas.
-- `DASHBOARD_ADMIN_USERNAME` y `DASHBOARD_ADMIN_PASSWORD`: usuario admin
-  opcional, separado del viewer.
+- `viewer`: recomendado para visualizacion.
+- `admin`: permite administrar listas.
+
+Ejemplo seguro de `data/dashboard_users.json`:
+
+```json
+[
+  {
+    "username": "admin",
+    "password_hash": "<HASH_GENERADO>",
+    "role": "admin",
+    "enabled": true,
+    "created_at": "2026-06-07T00:00:00Z"
+  }
+]
+```
+
+Las variables antiguas `DASHBOARD_USERNAME`, `DASHBOARD_PASSWORD`,
+`DASHBOARD_ROLE`, `DASHBOARD_ADMIN_USERNAME` y `DASHBOARD_ADMIN_PASSWORD` estan
+deprecadas y no se usan por defecto para autenticar.
 
 Solo en pruebas locales controladas puede desactivarse:
 

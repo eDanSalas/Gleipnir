@@ -16,6 +16,7 @@ dependencies = [
     "netaddr",
     "python-json-logger",
     "Flask",
+    "Werkzeug",
 ]
 
 [project.optional-dependencies]

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import json
 import re
 from pathlib import Path
 from types import SimpleNamespace
@@ -19,6 +20,7 @@ from src.dashboard.app import (
     DashboardError,
     create_app,
 )
+from src.dashboard.auth import hash_dashboard_password
 from src.detector import AUTHORIZED_DEVICE, BLACKLISTED_EXTERNAL_IP, UNAUTHORIZED_DEVICE
 from src.storage import ALERT_SENT, DNS_EVENT, HTTP_EVENT, SQLiteEventStore
 from src.storage import (
@@ -299,6 +301,84 @@ def test_dashboard_login_accepts_valid_credentials(tmp_path: Path) -> None:
     _assert_audit_event_has_no_secrets(audit_events[-1])
 
 
+def test_dashboard_login_accepts_admin_from_users_file(tmp_path: Path) -> None:
+    config = _config(
+        tmp_path / "missing.db",
+        dashboard_auth_enabled=True,
+        dashboard_users=[
+            _dashboard_user("admin", "admin-password", role="admin"),
+        ],
+    )
+    app = create_app(config=config)
+
+    response = app.test_client().post(
+        "/login",
+        data={"username": "admin", "password": "admin-password"},
+    )
+
+    assert response.status_code == 302
+    assert response.headers["Location"] == "/"
+
+
+def test_dashboard_login_accepts_viewer_from_users_file(tmp_path: Path) -> None:
+    config = _config(
+        tmp_path / "missing.db",
+        dashboard_auth_enabled=True,
+        dashboard_users=[
+            _dashboard_user("viewer", "viewer-password", role="viewer"),
+        ],
+    )
+    app = create_app(config=config)
+
+    response = app.test_client().post(
+        "/login",
+        data={"username": "viewer", "password": "viewer-password"},
+    )
+
+    assert response.status_code == 302
+    assert response.headers["Location"] == "/"
+
+
+def test_dashboard_login_rejects_disabled_user(tmp_path: Path) -> None:
+    config = _config(
+        tmp_path / "missing.db",
+        dashboard_auth_enabled=True,
+        dashboard_users=[
+            _dashboard_user("admin", "admin-password", role="admin"),
+            _dashboard_user("viewer", "viewer-password", role="viewer", enabled=False),
+        ],
+    )
+    app = create_app(config=config)
+
+    response = app.test_client().post(
+        "/login",
+        data={"username": "viewer", "password": "viewer-password"},
+    )
+
+    assert response.status_code == 401
+    assert b"viewer-password" not in response.data
+
+
+def test_dashboard_does_not_render_password_hash(tmp_path: Path) -> None:
+    password_hash = hash_dashboard_password("viewer-password")
+    config = _config(
+        tmp_path / "missing.db",
+        dashboard_auth_enabled=True,
+        dashboard_users=[
+            _dashboard_user_from_hash("viewer", password_hash, role="viewer"),
+        ],
+    )
+    app = create_app(config=config)
+
+    response = app.test_client().get(
+        "/",
+        headers={"Authorization": _basic_auth("viewer", "viewer-password")},
+    )
+
+    assert response.status_code == 200
+    assert password_hash.encode("utf-8") not in response.data
+
+
 def test_dashboard_login_rejects_invalid_credentials_without_echoing_secret(
     tmp_path: Path,
     caplog: pytest.LogCaptureFixture,
@@ -499,14 +579,13 @@ def test_dashboard_unauthenticated_access_is_blocked(tmp_path: Path) -> None:
     assert b"Acceso al dashboard local" in response.data
 
 
-def test_dashboard_auth_enabled_requires_configured_credentials(tmp_path: Path) -> None:
-    with pytest.raises(DashboardError, match="DASHBOARD_USERNAME"):
+def test_dashboard_auth_enabled_requires_configured_users_file(tmp_path: Path) -> None:
+    with pytest.raises(DashboardError, match="DASHBOARD_USERS_FILE"):
         create_app(
             config=_config(
                 tmp_path / "missing.db",
                 dashboard_auth_enabled=True,
-                dashboard_username="",
-                dashboard_password="",
+                dashboard_users_file=tmp_path / "missing_users.json",
             )
         )
 
@@ -524,16 +603,19 @@ def test_dashboard_auth_enabled_requires_secret_key(tmp_path: Path) -> None:
         )
 
 
-def test_dashboard_auth_enabled_rejects_partial_admin_credentials(tmp_path: Path) -> None:
-    with pytest.raises(DashboardError, match="DASHBOARD_ADMIN_USERNAME"):
+def test_dashboard_warns_when_deprecated_credentials_are_present(tmp_path: Path) -> None:
+    with pytest.warns(RuntimeWarning, match="deprecated"):
         create_app(
             config=_config(
                 tmp_path / "missing.db",
                 dashboard_auth_enabled=True,
                 dashboard_username="viewer",
                 dashboard_password="viewer-password",
-                dashboard_admin_username="admin",
-                dashboard_admin_password="",
+                deprecated_dashboard_env_vars=(
+                    "DASHBOARD_USERNAME",
+                    "DASHBOARD_PASSWORD",
+                    "DASHBOARD_ROLE",
+                ),
             )
         )
 
@@ -915,16 +997,44 @@ def _config(
     dashboard_admin_username: str | None = None,
     dashboard_admin_password: str | None = None,
     dashboard_secret_key: str | None = "test-dashboard-secret-key",
+    dashboard_users_file: Path | None = None,
+    dashboard_users: list[dict[str, object]] | None = None,
+    deprecated_dashboard_env_vars: tuple[str, ...] = (),
     dashboard_session_cookie_secure: bool = False,
     dashboard_session_timeout_minutes: int = 30,
 ) -> SimpleNamespace:
     root = db_path.parent
+    users_file = dashboard_users_file or root / "dashboard_users.json"
+    if dashboard_users is not None:
+        _write_dashboard_users(users_file, dashboard_users)
+    elif dashboard_auth_enabled:
+        generated_users = []
+        if dashboard_username and dashboard_password:
+            generated_users.append(
+                _dashboard_user(
+                    dashboard_username,
+                    dashboard_password,
+                    role=dashboard_role,
+                )
+            )
+        if dashboard_admin_username and dashboard_admin_password:
+            generated_users.append(
+                _dashboard_user(
+                    dashboard_admin_username,
+                    dashboard_admin_password,
+                    role="admin",
+                )
+            )
+        if generated_users:
+            _write_dashboard_users(users_file, generated_users)
+
     return SimpleNamespace(
         ids_db_path=db_path,
         whitelist_file=root / "whitelist.csv",
         blacklist_file=root / "blacklist.txt",
         log_dir=root / "logs",
         dashboard_auth_enabled=dashboard_auth_enabled,
+        dashboard_users_file=users_file,
         dashboard_username=dashboard_username,
         dashboard_password=dashboard_password,
         dashboard_role=dashboard_role,
@@ -933,7 +1043,47 @@ def _config(
         dashboard_secret_key=dashboard_secret_key,
         dashboard_session_cookie_secure=dashboard_session_cookie_secure,
         dashboard_session_timeout_minutes=dashboard_session_timeout_minutes,
+        deprecated_dashboard_env_vars=deprecated_dashboard_env_vars,
     )
+
+
+def _dashboard_user(
+    username: str,
+    password: str,
+    *,
+    role: str = "viewer",
+    enabled: bool = True,
+) -> dict[str, object]:
+    return _dashboard_user_from_hash(
+        username,
+        hash_dashboard_password(password),
+        role=role,
+        enabled=enabled,
+    )
+
+
+def _dashboard_user_from_hash(
+    username: str,
+    password_hash: str,
+    *,
+    role: str = "viewer",
+    enabled: bool = True,
+) -> dict[str, object]:
+    return {
+        "username": username,
+        "password_hash": password_hash,
+        "role": role,
+        "enabled": enabled,
+        "created_at": "2026-06-07T00:00:00Z",
+    }
+
+
+def _write_dashboard_users(
+    users_file: Path,
+    users: list[dict[str, object]],
+) -> None:
+    users_file.parent.mkdir(parents=True, exist_ok=True)
+    users_file.write_text(json.dumps(users), encoding="utf-8")
 
 
 def _basic_auth(username: str, password: str) -> str:
@@ -975,6 +1125,7 @@ def _assert_audit_event_has_no_secrets(event) -> None:
     assert "wrong-password" not in raw_text
     assert "csrf_token" not in raw_text
     assert "gleipnir_csrf_token" not in raw_text
+    assert "password_hash" not in raw_text
     assert "password" not in raw_text.lower()
     assert "token" not in raw_text.lower()
 

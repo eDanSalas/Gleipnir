@@ -76,7 +76,7 @@ Configuraciones relevantes de la version 2.0:
 - `GLEIPNIR_MODE`
 - API keys opcionales para AbuseIPDB y VirusTotal.
 - Variables del dashboard: `DASHBOARD_AUTH_ENABLED`,
-  `DASHBOARD_SECRET_KEY`, `DASHBOARD_ROLE`,
+  `DASHBOARD_SECRET_KEY`, `DASHBOARD_USERS_FILE`,
   `DASHBOARD_SESSION_COOKIE_SECURE` y
   `DASHBOARD_SESSION_TIMEOUT_MINUTES`.
 
@@ -201,6 +201,7 @@ Controles del dashboard:
 - Host por defecto `127.0.0.1`.
 - `0.0.0.0` solo desde CLI con `--allow-lan`.
 - Login con sesion cuando `DASHBOARD_AUTH_ENABLED=true`.
+- Usuarios desde `DASHBOARD_USERS_FILE` con `password_hash` no reversible.
 - Roles `viewer` y `admin`.
 - Tokens CSRF en formularios administrativos.
 - Expiracion de sesion por `DASHBOARD_SESSION_TIMEOUT_MINUTES`.

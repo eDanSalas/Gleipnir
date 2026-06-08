@@ -14,6 +14,7 @@ htmlcov/
 logs/
 data/whitelist.csv
 data/blacklist.txt
+data/dashboard_users.json
 data/*.db
 data/*.db-*
 *.log

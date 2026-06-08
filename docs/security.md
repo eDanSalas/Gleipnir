@@ -10,12 +10,8 @@ La autenticacion se controla desde `.env`:
 
 ```env
 DASHBOARD_AUTH_ENABLED=true
-DASHBOARD_USERNAME=viewer-local
-DASHBOARD_PASSWORD=<CONTRASENA_VIEWER>
-DASHBOARD_ROLE=viewer
-DASHBOARD_ADMIN_USERNAME=admin-local
-DASHBOARD_ADMIN_PASSWORD=<CONTRASENA_ADMIN>
 DASHBOARD_SECRET_KEY=<CLAVE_LARGA_ALEATORIA>
+DASHBOARD_USERS_FILE=data/dashboard_users.json
 DASHBOARD_SESSION_COOKIE_SECURE=false
 DASHBOARD_SESSION_TIMEOUT_MINUTES=30
 ```
@@ -43,10 +39,28 @@ Roles:
 - `admin`: puede hacer todo lo anterior y administrar whitelist/blacklist desde
   `/admin/lists`.
 
-Si solo se configura `DASHBOARD_USERNAME` y `DASHBOARD_PASSWORD`, el permiso de
-ese usuario se define con `DASHBOARD_ROLE`. Si se configuran
-`DASHBOARD_ADMIN_USERNAME` y `DASHBOARD_ADMIN_PASSWORD`, esas credenciales
-siempre tienen rol `admin`.
+Los usuarios se definen en `DASHBOARD_USERS_FILE`, por defecto
+`data/dashboard_users.json`. Ese archivo debe guardar `password_hash`, no
+contrasenas en texto plano:
+
+```json
+[
+  {
+    "username": "admin",
+    "password_hash": "<HASH_GENERADO>",
+    "role": "admin",
+    "enabled": true,
+    "created_at": "2026-06-07T00:00:00Z"
+  }
+]
+```
+
+Los hashes son no reversibles. Gleipnir verifica la contrasena con Werkzeug y no
+desencripta nada. Si un usuario tiene `enabled=false`, no puede iniciar sesion.
+Las variables antiguas `DASHBOARD_USERNAME`, `DASHBOARD_PASSWORD`,
+`DASHBOARD_ROLE`, `DASHBOARD_ADMIN_USERNAME` y `DASHBOARD_ADMIN_PASSWORD` estan
+deprecadas; si aparecen en `.env`, se advierte al operador y no se usan por
+defecto para autenticar.
 
 ## 2. Proteccion CSRF
 
@@ -170,8 +184,9 @@ se registran mediante `logger.py`.
 - `.env` creado localmente y no versionado en Git.
 - `DASHBOARD_SECRET_KEY` definido con valor largo y aleatorio.
 - `DASHBOARD_AUTH_ENABLED=true` si se usa `0.0.0.0`.
-- `DASHBOARD_ROLE=viewer` para usuarios de solo visualizacion.
-- Usuario `admin` separado si se administran listas desde navegador.
+- `DASHBOARD_USERS_FILE` creado con usuarios habilitados y hashes no reversibles.
+- Usuario con rol `viewer` para visualizacion y usuario `admin` separado si se
+  administran listas desde navegador.
 - `gleipnir dashboard --host 127.0.0.1 --port 8080` para uso local.
 - `gleipnir dashboard --host 0.0.0.0 --port 8080 --allow-lan` solo en red local.
 - HTTPS con Nginx/Caddy si se usa fuera de localhost.
