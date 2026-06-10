@@ -68,7 +68,8 @@ Abre una terminal y ejecuta:
 
 ```bash
 sudo apt update
-sudo apt install -y python3 python3-pip python3-venv libpcap-dev tcpdump whois nftables
+sudo apt install -y python3 python3-pip python3-venv libpcap-dev tcpdump whois nftables git
+git clone https://github.com/eDanSalas/Gleipnir.git
 ```
 
 ¿Para qué sirve cada uno?
