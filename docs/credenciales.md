@@ -3,6 +3,8 @@
 ## Objetivo
 
 Este documento define como Gleipnir maneja secretos y configuraciones sensibles.
+Para una guia paso a paso de configuracion del `.env` y SMTP orientada a
+usuarios, consulta [`docs/manual_usuario.md`](manual_usuario.md) (secciones 3.5 y 5).
 
 ## Principios
 

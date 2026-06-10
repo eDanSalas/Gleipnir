@@ -1,5 +1,10 @@
 # Troubleshooting - Gleipnir IDS
 
+> Para una guía de solución de problemas orientada a usuarios no técnicos (correo
+> en spam, login del Dashboard, `command not found`, puerto ocupado, IPS, etc.)
+> consulta la sección 15 de [`docs/manual_usuario.md`](manual_usuario.md). Este
+> documento cubre diagnósticos más técnicos.
+
 ## Live capture recibe paquetes como Raw
 
 Si los logs muestran algo similar a:

@@ -1,912 +1,909 @@
-# Manual de Usuario - Gleipnir IDS Institucional
+# Manual de Usuario de Gleipnir IDS/IPS
 
-## 1. Objetivo
+Guía práctica para **personas no técnicas** que necesitan instalar, operar o
+consultar Gleipnir de forma segura. No necesitas ser ingeniero ni saber Linux a
+fondo: cada paso y cada comando se explican antes de usarlos.
 
-Gleipnir es un IDS institucional defensivo y educativo para redes propias. Su
-objetivo es apoyar al administrador en:
+> ⚠️ **Aviso de uso responsable:** Gleipnir es una herramienta **defensiva**.
+> Úsala únicamente en tu propia red, en un laboratorio o donde tengas
+> autorización expresa. Nunca la uses para vigilar o atacar redes ajenas.
 
-- Validar dispositivos mediante lista blanca de IP/MAC.
-- Detectar dispositivos no autorizados.
-- Registrar trafico DNS y HTTP cuando esos datos estan disponibles.
-- Comparar destinos externos contra una lista negra local.
-- Enviar alertas por SMTP cuando el modulo correspondiente lo determine.
-- Enriquecer IPs externas con AbuseIPDB, VirusTotal y Whois.
-- Guardar eventos en SQLite para generar reportes acumulados JSON y CSV.
-- Aplicar politicas de alerta para evitar correos repetidos.
-- Verificar salud operativa con `gleipnir status`.
-- Ejecutar mantenimiento de retencion con `gleipnir maintenance`.
-- Operar en modo 24/7 con `systemd` y `gleipnir live --forever`.
+> 📸 **Sobre las capturas de pantalla:** este manual incluye marcadores como
+> `[CAPTURA: ...]`. Indican exactamente qué imagen debe colocarse ahí. Las
+> capturas deben tomarse manualmente en tu equipo (ver la lista al final).
 
-El sistema no implementa ataques, explotacion, evasion, spoofing ni descifrado
-de trafico cifrado.
+---
 
-## 2. Sistema operativo recomendado
+## 1. ¿Qué es Gleipnir?
 
-Sistema objetivo: Ubuntu 24.04.4 LTS.
+Gleipnir es un sistema que **vigila tu red** y te avisa cuando pasa algo raro.
+Tiene cuatro piezas:
 
-El desarrollo actual tambien puede ejecutarse en otros sistemas para pruebas
-offline, pero la captura live esta pensada para Linux con permisos de captura de
-paquetes.
+- **IDS (Sistema de Detección de Intrusos):** observa el tráfico, **detecta** y
+  **avisa**. Por sí solo **no bloquea** nada. Es el comportamiento por defecto.
+- **IPS / Firewall (opcional):** además de avisar, puede **aplicar reglas** para
+  bloquear o permitir tráfico. Viene **apagado** por seguridad.
+- **Dashboard:** una página web local donde **ves** los eventos, gráficas y
+  alertas con el navegador.
+- **CLI (línea de comandos):** se opera escribiendo comandos en la terminal
+  (por ejemplo `gleipnir status`).
 
-## 3. Requisitos
+En resumen: **el IDS mira y avisa; el IPS, si lo activas tú, puede bloquear.**
 
-Paquetes del sistema en Ubuntu:
+---
+
+## 2. ¿Qué puede hacer Gleipnir?
+
+| Capacidad | Ejemplo |
+|---|---|
+| Detectar dispositivos no autorizados | Un teléfono desconocido se conecta a tu red → alerta |
+| Registrar sitios visitados (DNS/HTTP) | Quedan registrados los dominios consultados |
+| Alertar por IPs peligrosas | Un equipo habla con una IP de malware → correo de emergencia |
+| Investigación forense automática | Consulta AbuseIPDB / Whois sobre la IP peligrosa |
+| Enviar correos al administrador | Las alertas llegan al `ADMIN_EMAIL` configurado |
+| Generar reportes | Archivos JSON y CSV con los eventos |
+| Aplicar reglas IPS opcionales | Bloquear IPs de la blacklist con `nftables` |
+| Mostrar todo en un panel web | Tarjetas, gráficas y detalle de eventos |
+
+---
+
+## 3. Requisitos del sistema
+
+### 3.1 Sistema operativo recomendado
+
+- **Ubuntu Server 24.04 LTS** (sin entorno gráfico).
+- **Ubuntu Desktop 24.04 LTS** (con escritorio y navegador).
+
+> Gleipnir está pensado **principalmente para Linux (Ubuntu)**. La captura de
+> tráfico en vivo y el firewall (`nftables`) son funciones de Linux.
+
+> 💡 **Nota Windows:** en Windows la captura de paquetes usaría **Npcap**. El
+> proyecto **no** está orientado a Windows y la captura en vivo y el IPS no se
+> documentan para esa plataforma; úsalo en Ubuntu. Windows solo sirve, a lo más,
+> para abrir el navegador y consultar el Dashboard de un servidor Ubuntu.
+
+### 3.2 Paquetes del sistema
+
+Abre una terminal y ejecuta:
 
 ```bash
 sudo apt update
-sudo apt install -y python3 python3-pip python3-venv libpcap-dev tcpdump whois
+sudo apt install -y python3 python3-pip python3-venv libpcap-dev tcpdump whois nftables
 ```
 
-Entorno Python:
+¿Para qué sirve cada uno?
 
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-python -m pip install --upgrade pip
-python -m pip install -e .
-gleipnir --help
-```
+| Paquete | Para qué sirve (en simple) |
+|---|---|
+| `python3` | El lenguaje en el que está hecho Gleipnir |
+| `python3-pip` | Instalador de librerías de Python |
+| `python3-venv` | Crea un "entorno aislado" para no ensuciar el sistema |
+| `libpcap-dev` | Librería que permite **capturar paquetes** de la red en Linux |
+| `tcpdump` | Herramienta de captura; ayuda a verificar que la red funciona |
+| `whois` | Consulta a quién pertenece una IP/dominio (uso forense) |
+| `nftables` | El "firewall" de Linux que usa el IPS opcional |
 
-Para ejecutar pruebas automatizadas se puede instalar tambien el extra de
-pruebas o usar `requirements.txt`:
+### 3.3 Dependencias de Python
 
-```bash
-python -m pip install -e ".[test]"
-```
+- **`requirements.txt`**: lista las librerías de Python que Gleipnir necesita
+  (por ejemplo `scapy`, `flask`, `requests`).
+- **`pyproject.toml`**: define el proyecto y crea el comando `gleipnir`.
+- **Entorno virtual `.venv`**: una carpeta donde se instalan esas librerías de
+  forma aislada, para no afectar al resto del sistema. Lo crearás en el paso 4.
 
-Directorios esperados:
+### 3.4 Captura de paquetes
 
-```bash
-mkdir -p data logs logs/reports
-```
+- **Libpcap** (`libpcap-dev`) es lo que permite a Gleipnir "escuchar" la red.
+- Capturar tráfico requiere **permisos de administrador** (`sudo` / root).
+- Para ver tus **interfaces de red** (las "tarjetas" por las que pasa el tráfico):
 
-Archivos base recomendados para una instalacion nueva:
+  ```bash
+  ip addr
+  ```
 
-```bash
-touch data/blacklist.txt
-echo "ip,mac,description" > data/whitelist.csv
-echo "[ ]" > data/dashboard_users.json
-touch data/gleipnir_events.db
-chmod 600 data/dashboard_users.json
-chmod 600 data/gleipnir_events.db
-```
+  Verás nombres como `ens33`, `eth0` o `wlan0`. Anota el que corresponde a tu
+  conexión activa; lo usarás en el modo `live`.
 
-Significado de cada archivo:
+### 3.5 Correo SMTP (para recibir alertas)
 
-- `data/blacklist.txt`: lista negra local. Puede iniciar vacia; despues cada
-  linea debe contener una IP externa.
-- `data/whitelist.csv`: lista blanca local. El encabezado correcto es
-  `ip,mac,description`.
-- `ip`: direccion IPv4 o IPv6 autorizada.
-- `mac`: direccion MAC autorizada asociada al equipo.
-- `description`: descripcion humana del equipo, por ejemplo area, propietario o
-  ubicacion.
-- `data/dashboard_users.json`: archivo local de cuentas del dashboard. `[ ]`
-  es un arreglo JSON vacio; `gleipnir user create` lo actualiza con usuarios y
-  `password_hash`.
-- `data/gleipnir_events.db`: base SQLite local. Gleipnir crea las tablas cuando
-  se inicializa el almacenamiento.
+Gleipnir envía alertas por correo. Necesitas los datos de un servidor de correo
+(SMTP). Se configuran en el archivo `.env` (ver sección 5):
 
-Despues de editar `.env` y crear los archivos base:
+| Variable | Qué es |
+|---|---|
+| `SMTP_HOST` | Servidor de correo, p. ej. `smtp.ejemplo.com` |
+| `SMTP_PORT` | Puerto, normalmente `587` (STARTTLS) |
+| `SMTP_USER` | Usuario/cuenta que envía los correos |
+| `SMTP_PASSWORD` | Contraseña o "contraseña de aplicación" |
+| `ADMIN_EMAIL` | Correo del administrador que **recibe** las alertas |
 
-```bash
-gleipnir user create --username admin --role admin
-gleipnir test-config
-gleipnir status
-```
+- Gleipnir usa **TLS/STARTTLS** (cifrado) al enviar.
+- ⚠️ **Nunca subas tus credenciales a Git** ni las compartas. El archivo `.env`
+  es privado.
 
-`gleipnir user create` pide la contrasena de forma interactiva con `getpass` y
-no la muestra en pantalla. `gleipnir test-config` y `gleipnir status` deben
-ejecutarse despues de completar `.env`; si SMTP, API keys o interfaz no estan
-definidos para el entorno, el comando mostrara advertencias o errores claros.
+---
 
-## 4. Configuracion con .env
+## 4. Instalación paso a paso
 
-Copiar la plantilla en el equipo donde se ejecutara Gleipnir:
+1. **Descarga o copia** el proyecto a tu equipo Ubuntu.
+2. **Entra a la carpeta** del proyecto:
+
+   ```bash
+   cd Gleipnir
+   ```
+3. **Crea el entorno virtual** (la carpeta aislada `.venv`):
+
+   ```bash
+   python3 -m venv .venv
+   ```
+4. **Activa el entorno** (verás `(.venv)` al inicio de la línea):
+
+   ```bash
+   source .venv/bin/activate
+   ```
+5. **Actualiza pip e instala dependencias + Gleipnir** en modo editable:
+
+   ```bash
+   pip install -U pip
+   pip install -e .
+   ```
+6. **Prueba que el comando funciona:**
+
+   ```bash
+   gleipnir --help
+   ```
+
+[CAPTURA: Comando gleipnir --help mostrando la lista de subcomandos]
+
+> 💡 **Importante sobre `sudo`:** al activar el entorno virtual, el comando
+> `gleipnir` solo existe **dentro** de ese entorno. Cuando uses `sudo` (por
+> ejemplo para capturar tráfico), `sudo` no conoce tu entorno y dirá
+> `command not found`. La solución es escribir la ruta completa:
+>
+> ```bash
+> sudo .venv/bin/gleipnir live --interface ens33
+> ```
+
+> 🖥️ **Ubuntu Server (sin escritorio):** todo se hace por terminal; el Dashboard
+> se abre desde el navegador de **otro** equipo de la red (ver sección 10.2).
+> 🖥️ **Ubuntu Desktop:** puedes abrir el Dashboard en el navegador del mismo equipo.
+
+---
+
+## 5. Configuración inicial
+
+### 5.1 Archivo `.env`
+
+Es un archivo de texto con la **configuración** y los **datos sensibles** de
+Gleipnir (correo, claves, rutas). **No debe compartirse ni subirse a Git.**
+
+Crea tu `.env` copiando la plantilla incluida:
 
 ```bash
 cp .env.example .env
-chmod 600 .env
 ```
 
-En Ubuntu Server, si el proyecto se instala en `/opt/gleipnir`, usar la misma
-idea desde ese directorio:
-
-```bash
-cd /opt/gleipnir
-sudo cp .env.example .env
-sudo nano .env
-sudo chmod 600 .env
-```
-
-Si el servicio `systemd` corre como `root`, el archivo puede quedar propiedad de
-`root`. Si se ejecuta con un usuario dedicado, ese usuario debe poder leer
-`/opt/gleipnir/.env`. No guardar secretos en el archivo `.service`; el servicio
-debe leerlos desde `EnvironmentFile=/opt/gleipnir/.env`.
-
-### Uso de valores entre llaves `{...}`
-
-En esta guia, un valor escrito como `{VALOR}` significa "reemplace esto por el
-valor real del entorno". Las llaves son un marcador visual; no son obligatorias
-dentro del archivo `.env`.
-
-Ejemplo de marcador:
+Luego edítalo. Ejemplo **seguro sin credenciales reales** (cambia los valores
+marcados `CAMBIAR_ESTO`):
 
 ```env
-SMTP_HOST={SERVIDOR_SMTP}
-```
-
-Ejemplo ya configurado:
-
-```env
-SMTP_HOST=smtp.gmail.com
-```
-
-Para contrasenas, tokens o claves, usar valores reales solo en el equipo de
-despliegue. No pegarlos en documentacion, capturas de pantalla ni repositorios.
-Si se edita `.env` mientras los servicios estan activos, reiniciarlos para que
-lean la configuracion nueva:
-
-```bash
-sudo systemctl restart gleipnir
-sudo systemctl restart gleipnir-dashboard
-```
-
-### Plantilla base
-
-Editar `.env` con valores reales solo en el equipo de despliegue:
-
-```env
-SMTP_HOST=smtp.example.org
+SMTP_HOST=smtp.ejemplo.com
 SMTP_PORT=587
-SMTP_USER=alerts@example.org
-SMTP_PASSWORD=
-ADMIN_EMAIL=admin@example.org
+SMTP_USER=usuario@ejemplo.com
+SMTP_PASSWORD=CAMBIAR_ESTO
+ADMIN_EMAIL=admin@ejemplo.com
 
 WHITELIST_FILE=data/whitelist.csv
-WHITELIST_AUTH_POLICY=strict
 BLACKLIST_FILE=data/blacklist.txt
 LOG_DIR=logs/
 REPORT_DIR=logs/reports/
-IDS_DB_PATH=data/gleipnir_events.db
-
-ABUSEIPDB_API_KEY=
-VIRUSTOTAL_API_KEY=
-THREAT_INTEL_TIMEOUT_SECONDS=10
-THREAT_INTEL_CACHE_TTL_SECONDS=86400
-
-ALERT_COOLDOWN_SECONDS=300
-ALERT_MAX_PER_MINUTE=5
-
-GLEIPNIR_INTERFACE=
-GLEIPNIR_MODE=live
-GLEIPNIR_SCAPY_USE_PCAP=false
-HEALTH_LOG_INTERVAL_SECONDS=300
-EVENT_RETENTION_DAYS=30
-MAX_LOG_SIZE_MB=50
-MAX_REPORTS_TO_KEEP=20
 
 DASHBOARD_AUTH_ENABLED=true
-DASHBOARD_SECRET_KEY=<CLAVE_LARGA_ALEATORIA>
+DASHBOARD_SECRET_KEY=CAMBIAR_ESTO
 DASHBOARD_USERS_FILE=data/dashboard_users.json
-DASHBOARD_SESSION_COOKIE_SECURE=false
-DASHBOARD_SESSION_TIMEOUT_MINUTES=30
-DASHBOARD_PASSWORD_MIN_LENGTH=12
-DASHBOARD_LOGIN_MAX_ATTEMPTS=5
-DASHBOARD_LOGIN_LOCKOUT_SECONDS=300
+
+IPS_CONFIG_FILE=data/ips_config.json
+IPS_BACKEND=nftables
 ```
 
-### Que va en cada variable
+> ⚠️ Los valores `CAMBIAR_ESTO` son **ejemplos**. Pon los tuyos. Nunca uses
+> contraseñas reales en documentos ni capturas de pantalla.
 
-| Variable | Obligatoria | Que debe contener |
-| --- | --- | --- |
-| `SMTP_HOST` | Si | Host o IP del servidor SMTP, por ejemplo `{SERVIDOR_SMTP}`. |
-| `SMTP_PORT` | Si | Puerto SMTP numerico. Normalmente `587` para TLS/STARTTLS. |
-| `SMTP_USER` | Si | Usuario/cuenta SMTP que enviara alertas, por ejemplo `{CUENTA_ALERTAS}`. |
-| `SMTP_PASSWORD` | Si | Contrasena o password de aplicacion de la cuenta SMTP. Es secreto. |
-| `ADMIN_EMAIL` | Si | Correo del administrador que recibira alertas del IDS. |
-| `WHITELIST_FILE` | Si | Ruta del CSV de lista blanca, por ejemplo `data/whitelist.csv`. |
-| `WHITELIST_AUTH_POLICY` | No | Politica de autorizacion: `strict` o `ip_fallback`. Valor recomendado y por defecto: `strict`. |
-| `BLACKLIST_FILE` | Si | Ruta del TXT de lista negra, por ejemplo `data/blacklist.txt`. |
-| `LOG_DIR` | Si | Directorio donde Gleipnir escribira logs y cache operativo, por ejemplo `logs/`. |
-| `REPORT_DIR` | No | Directorio de reportes JSON/CSV. Si se omite, se usa `LOG_DIR`. |
-| `IDS_DB_PATH` | No | Ruta de la base SQLite de eventos, por ejemplo `data/gleipnir_events.db`. |
-| `ABUSEIPDB_API_KEY` | No | API key de AbuseIPDB para threat intelligence. Dejar vacia si no se usara. |
-| `VIRUSTOTAL_API_KEY` | No | API key de VirusTotal. Dejar vacia si no se usara. |
-| `THREAT_INTEL_TIMEOUT_SECONDS` | No | Tiempo maximo de espera para APIs externas. Valor recomendado: `10`. |
-| `THREAT_INTEL_CACHE_TTL_SECONDS` | No | Tiempo de vida del cache de threat intelligence en segundos. `86400` equivale a 24 horas. |
-| `ALERT_COOLDOWN_SECONDS` | No | Segundos para evitar correos repetidos del mismo evento. Valor recomendado: `300`. |
-| `ALERT_MAX_PER_MINUTE` | No | Maximo de alertas por correo permitidas por minuto. Valor recomendado: `5`. |
-| `GLEIPNIR_INTERFACE` | No | Interfaz esperada para captura live, por ejemplo `{INTERFAZ}` como `wlan0`, `eth0` o `ens33`. |
-| `GLEIPNIR_MODE` | No | Modo operativo esperado: `offline`, `replay` o `live`. |
-| `GLEIPNIR_SCAPY_USE_PCAP` | No | `true` para pedir a Scapy el backend libpcap durante captura live. Usarlo si la interfaz entrega paquetes como `Raw`. |
-| `HEALTH_LOG_INTERVAL_SECONDS` | No | Intervalo de logs de salud en modo `live --forever`. Valor recomendado: `300`. |
-| `EVENT_RETENTION_DAYS` | No | Dias que se conservan eventos en SQLite antes de mantenimiento. |
-| `MAX_LOG_SIZE_MB` | No | Tamano maximo esperado para rotacion/validacion de logs, en MB. |
-| `MAX_REPORTS_TO_KEEP` | No | Cantidad maxima de reportes generados que se conservaran. |
-| `DASHBOARD_AUTH_ENABLED` | No | `true` para exigir login en dashboard; `false` solo para laboratorio local controlado. |
-| `DASHBOARD_SECRET_KEY` | Si se activa auth | Clave larga y aleatoria para firmar sesion y tokens CSRF. Es secreto. |
-| `DASHBOARD_USERS_FILE` | Si se activa auth | Ruta del JSON local de usuarios del dashboard con `password_hash`, por ejemplo `data/dashboard_users.json`. |
-| `DASHBOARD_SESSION_COOKIE_SECURE` | No | `false` en HTTP local; `true` cuando se usa HTTPS con reverse proxy. |
-| `DASHBOARD_SESSION_TIMEOUT_MINUTES` | No | Minutos antes de expirar la sesion del dashboard. Valor recomendado: `30`. |
-| `DASHBOARD_PASSWORD_MIN_LENGTH` | No | Longitud minima para crear o cambiar contrasenas del dashboard. Valor recomendado: `12`. |
-| `DASHBOARD_LOGIN_MAX_ATTEMPTS` | No | Intentos fallidos permitidos antes del bloqueo temporal. Valor recomendado: `5`. |
-| `DASHBOARD_LOGIN_LOCKOUT_SECONDS` | No | Duracion del bloqueo temporal de login en segundos. Valor recomendado: `300`. |
+Notas sobre rutas reales del proyecto:
 
-Variables booleanas como `DASHBOARD_AUTH_ENABLED` y
-`DASHBOARD_SESSION_COOKIE_SECURE` aceptan valores como `true` o `false`.
-Variables numericas como `SMTP_PORT`, `EVENT_RETENTION_DAYS` y
-`ALERT_MAX_PER_MINUTE` deben contener solo numeros.
+- La **blacklist** es `data/blacklist.txt` (no `.csv`).
+- Los **reportes** se guardan en `logs/reports/`.
+- La configuración **operativa** del IPS vive en `data/ips_config.json` (no en
+  `.env`); `.env` solo guarda los valores base del IPS.
 
-### Usuarios del dashboard con hashes
-
-Las contrasenas del dashboard no deben guardarse en `.env`. Tampoco se
-encriptan de forma reversible: se almacenan como hashes no reversibles porque el
-sistema no debe poder recuperar una contrasena en texto plano. El archivo
-indicado por `DASHBOARD_USERS_FILE` debe contener usuarios con estos campos:
-`username`, `password_hash`, `role`, `enabled` y `created_at`.
-
-```json
-[
-  {
-    "username": "admin",
-    "password_hash": "<HASH_GENERADO>",
-    "role": "admin",
-    "enabled": true,
-    "created_at": "2026-06-07T00:00:00Z"
-  },
-  {
-    "username": "viewer",
-    "password_hash": "<HASH_GENERADO>",
-    "role": "viewer",
-    "enabled": true,
-    "created_at": "2026-06-07T00:00:00Z"
-  }
-]
-```
-
-Generar cada hash en Ubuntu:
-
-```bash
-python - <<'PY'
-from getpass import getpass
-from werkzeug.security import generate_password_hash
-print(generate_password_hash(getpass("Contrasena del dashboard: ")))
-PY
-```
-
-Copiar el resultado en `password_hash`. No copiar la contrasena real en el JSON.
-No subir `data/dashboard_users.json` al repositorio. Las variables antiguas
-`DASHBOARD_USERNAME`, `DASHBOARD_PASSWORD`, `DASHBOARD_ROLE`,
-`DASHBOARD_ADMIN_USERNAME` y `DASHBOARD_ADMIN_PASSWORD` estan deprecadas; si se
-mantienen en `.env`, Gleipnir advierte que debe usarse `DASHBOARD_USERS_FILE` y
-no las usa por defecto para autenticar.
-
-Tambien se puede administrar el archivo de usuarios desde CLI:
-
-```bash
-gleipnir user list
-gleipnir user migrate-env
-gleipnir user create --username viewer --role viewer
-gleipnir user create --username admin --role admin
-gleipnir user disable --username viewer
-gleipnir user enable --username viewer
-gleipnir user change-password --username admin
-```
-
-Si un despliegue anterior usaba `DASHBOARD_USERNAME` y `DASHBOARD_PASSWORD`,
-ejecutar `gleipnir user migrate-env` una sola vez. El comando crea el usuario en
-`DASHBOARD_USERS_FILE` con `password_hash`, no imprime la contrasena ni el hash,
-no duplica usuarios existentes y no modifica `.env`. Despues de verificar el
-acceso, eliminar manualmente `DASHBOARD_USERNAME` y `DASHBOARD_PASSWORD`.
-
-Los comandos que asignan contrasena usan `getpass` y piden confirmacion. No se
-acepta `--password` para evitar que la contrasena quede guardada en historial de
-shell, listados de procesos o registros. Solo se guarda `password_hash`.
-
-Politica minima para crear o cambiar contrasenas del dashboard:
-
-- Longitud minima configurable con `DASHBOARD_PASSWORD_MIN_LENGTH`.
-- Al menos una minuscula.
-- Al menos una mayuscula.
-- Al menos un numero.
-- Al menos un simbolo.
-- Rechazo de contrasenas comunes: `admin`, `password`, `password123`,
-  `12345678`, `gleipnir` y `qwerty`.
-
-Esta politica no se aplica al login; el login solo verifica el hash guardado.
-
-Proteccion contra fuerza bruta:
-
-- `DASHBOARD_LOGIN_MAX_ATTEMPTS` limita intentos fallidos por usuario/IP.
-- `DASHBOARD_LOGIN_LOCKOUT_SECONDS` bloquea temporalmente nuevos intentos.
-- Los intentos fallidos se auditan como `ADMIN_LOGIN_FAILED`.
-- Los bloqueos se auditan como `LOGIN_LOCKED`.
-- Los mensajes no revelan si el usuario existe y nunca imprimen contrasenas.
-
-Permisos recomendados en Ubuntu:
-
-```bash
-chmod 600 data/dashboard_users.json
-```
-
-El archivo `data/dashboard_users.json` ya esta excluido en `.gitignore`; no debe
-subirse al repositorio.
-
-No subir `.env` al repositorio. La configuracion se valida con:
+### 5.2 Probar configuración
 
 ```bash
 gleipnir test-config
-gleipnir status
 ```
 
-`gleipnir test-config` muestra valores redactados, no secretos. `gleipnir
-status` revisa configuracion, listas, directorios, SQLite si existe,
-disponibilidad SMTP sin enviar correo real y la interfaz configurada si
-`GLEIPNIR_INTERFACE` esta definida.
+Salida esperada: `Configuration OK` seguido de la configuración en formato JSON,
+con los secretos **ocultos** (verás `"***"` en contraseñas y claves). Si falta
+algo obligatorio, te dirá qué variable falta.
 
-## 5. Lista blanca
+[CAPTURA: Salida de gleipnir test-config con secretos ocultos]
 
-Archivo por defecto: `data/whitelist.csv`.
+---
 
-Formato CSV:
+## 6. Usuarios del Dashboard
 
-```csv
-ip,mac,description
-192.168.1.10,aa:bb:cc:dd:ee:ff,Laptop administracion
-2001:db8::10,00:11:22:33:44:55,Servidor pruebas IPv6
+- **viewer (visor):** solo **ve** eventos y reportes. No puede cambiar nada.
+- **admin (administrador):** además puede **administrar** whitelist, blacklist y
+  la configuración del IPS.
+
+Comandos (las contraseñas se piden de forma segura, no se escriben en el comando):
+
+```bash
+gleipnir user create --username admin --role admin
+gleipnir user create --username visor --role viewer
+gleipnir user list
+gleipnir user change-password --username admin
+gleipnir user disable --username visor
+gleipnir user enable --username visor
 ```
 
-Campos:
+> 🔒 Las contraseñas **no se guardan en texto plano**. Se guardan como **hashes**
+> (un código irreversible) en `data/dashboard_users.json`. No edites ese archivo
+> a mano.
 
-- `ip`: IPv4 o IPv6 del dispositivo autorizado.
-- `mac`: direccion MAC en formato `aa:bb:cc:dd:ee:ff` o con guiones.
-- `description`: descripcion administrativa.
+---
 
-El modulo valida IP y MAC. Si el archivo esta mal formado, se reporta error con
-informacion de la linea.
+## 7. Lista blanca: dispositivos autorizados
 
-Tambien se validan duplicados. La whitelist se considera invalida si contiene:
+En lenguaje sencillo:
 
-- IP duplicada.
-- MAC duplicada.
-- La misma IP asociada a distintas MAC.
-- La misma MAC asociada a distintas IP.
+- **IP**: la "dirección" del equipo en la red (p. ej. `192.168.1.10`).
+- **MAC**: el identificador físico de la tarjeta de red (p. ej. `AA:BB:CC:DD:EE:FF`).
+- **Descripción**: un nombre amigable para reconocer el equipo.
 
-Ejemplo valido:
+Si un equipo está en la whitelist, Gleipnir lo considera **autorizado**
+(`AUTHORIZED_DEVICE`). Si no está, lo marca como **no autorizado**
+(`UNAUTHORIZED_DEVICE`) y puede alertar.
 
-```csv
-ip,mac,description
-192.168.1.10,aa:bb:cc:dd:ee:ff,Laptop administracion
-192.168.1.11,00:11:22:33:44:55,Equipo laboratorio
+### 7.1 Agregar equipo autorizado desde CLI
+
+```bash
+gleipnir whitelist add --ip 192.168.1.10 --mac AA:BB:CC:DD:EE:FF --description "Laptop de Administración"
 ```
 
-Ejemplo invalido por IP duplicada:
+[CAPTURA: Alta de IP/MAC en whitelist desde CLI]
 
-```csv
-ip,mac,description
-192.168.1.10,aa:bb:cc:dd:ee:ff,Laptop administracion
-192.168.1.10,00:11:22:33:44:55,Otro equipo
-```
-
-Ejemplo invalido por MAC duplicada en otra IP:
-
-```csv
-ip,mac,description
-192.168.1.10,aa:bb:cc:dd:ee:ff,Laptop administracion
-192.168.1.11,aa:bb:cc:dd:ee:ff,Equipo duplicado
-```
-
-### Politica de autorizacion IP/MAC
-
-La variable `WHITELIST_AUTH_POLICY` controla como se decide si un dispositivo es
-autorizado:
-
-- `strict`: politica por defecto y recomendada. Cuando IP y MAC estan
-  disponibles, ambas deben coincidir con una misma entrada de whitelist. Si la
-  MAC no esta disponible, el equipo no se autoriza y el evento queda con motivo
-  `mac_missing_strict_policy`.
-- `ip_fallback`: cuando la MAC no esta disponible por el tipo de captura,
-  permite autorizar por IP si esa IP esta en whitelist. Si IP y MAC si estan
-  disponibles, ambas deben coincidir. El evento autorizado indica
-  `authorized_by=ip_fallback` y el uso del fallback queda registrado en logs.
-
-Los eventos `AUTHORIZED_DEVICE` indican `authorized_by=ip_mac` o
-`authorized_by=ip_fallback`. Los eventos `UNAUTHORIZED_DEVICE` incluyen el
-motivo: `ip_not_in_whitelist`, `mac_not_in_whitelist`,
-`ip_mac_pair_mismatch` o `mac_missing_strict_policy`.
-
-Administracion desde CLI:
+### 7.2 Ver la whitelist
 
 ```bash
 gleipnir whitelist list
-gleipnir whitelist add --ip 192.168.1.10 --mac AA:BB:CC:DD:EE:FF --description "Laptop administracion"
-gleipnir whitelist remove --ip 192.168.1.10
+```
+
+### 7.3 Validar la whitelist (revisar que el archivo está bien)
+
+```bash
 gleipnir whitelist validate
 ```
 
-## 6. Lista negra
-
-Archivo por defecto: `data/blacklist.txt`.
-
-Formato TXT compatible:
-
-```text
-# Formato recomendado: IP,Riesgo
-8.8.8.8,Botnet
-1.1.1.1,Malware
-9.9.9.9,Virus
-208.67.222.222,Phishing
-
-# Tambien se acepta una IP por linea; el riesgo se interpreta como Unknown
-2001:4860:4860::8888
-```
-
-Riesgos soportados: `Virus`, `Malware`, `Botnet`, `Phishing` y `Unknown`.
-Solo se aceptan IPs individuales. El codigo actual no acepta rangos CIDR en la
-lista negra.
-
-Administracion desde CLI:
+### 7.4 Eliminar un equipo
 
 ```bash
-gleipnir blacklist list
-gleipnir blacklist add --ip 8.8.8.8 --reason "Botnet"
-gleipnir blacklist remove --ip 8.8.8.8
-gleipnir blacklist validate
+gleipnir whitelist remove --ip 192.168.1.10
 ```
 
-## 7. Modo offline
+### 7.5 Agregar desde el Dashboard
 
-Procesa un PCAP sin retrasos y sin abrir interfaces de red:
+1. Abre el Dashboard (sección 10).
+2. Inicia sesión como **admin**.
+3. En la barra superior entra a **Administrar listas**.
+4. Ve a la sección **Whitelist**.
+5. Captura **IP**, **MAC** y **Descripción**.
+6. Pulsa **Agregar**.
+7. Verifica que el equipo aparece en la tabla.
+
+[CAPTURA: Formulario de alta de IP/MAC en whitelist en el Dashboard]
+
+---
+
+## 8. Lista negra: IPs peligrosas
+
+La blacklist sirve para identificar **IPs externas peligrosas** (malware, botnet,
+virus, phishing). Cuando un equipo se comunica con una de ellas, Gleipnir genera
+una **alerta de emergencia** y, si activas el IPS, puede bloquearlas.
+
+```bash
+gleipnir blacklist add --ip 203.0.113.50 --reason "Botnet"
+gleipnir blacklist list
+gleipnir blacklist validate
+gleipnir blacklist remove --ip 203.0.113.50
+```
+
+**Formato del archivo** `data/blacklist.txt` (una IP por línea, con tipo de
+riesgo opcional separado por coma):
+
+```text
+203.0.113.50,Botnet
+198.51.100.20,Malware
+192.0.2.30,Virus
+```
+
+Tipos de riesgo soportados: **Virus, Malware, Botnet, Phishing, Unknown**. Si
+escribes solo la IP sin riesgo, se interpreta como `Unknown`.
+
+> 💡 Las IPs `203.0.113.x`, `198.51.100.x` y `192.0.2.x` son rangos
+> **reservados para documentación**; sirven para ejemplos y pruebas sin afectar
+> equipos reales.
+
+---
+
+## 9. Uso básico de Gleipnir CLI
+
+> Todos los comandos de esta sección **existen realmente** en el proyecto. Si un
+> comando no aparece aquí, probablemente no existe.
+
+### 9.1 Ver ayuda
+
+```bash
+gleipnir --help
+```
+
+Muestra todos los subcomandos. Para la ayuda de uno: `gleipnir <comando> --help`.
+
+### 9.2 Probar configuración
+
+```bash
+gleipnir test-config
+```
+
+### 9.3 Modo offline (analizar un archivo PCAP)
+
+Un **PCAP** es un archivo con tráfico de red ya capturado. Este modo lo procesa
+sin tocar la red:
 
 ```bash
 gleipnir offline --pcap archivo.pcap
 ```
 
-Este modo usa `sniffer.parse_pcap()` para convertir paquetes Ethernet IPv4/IPv6
-en `PacketEvent`.
-
-## 8. Modo replay
-
-Reproduce un PCAP como simulacion de trafico:
+### 9.4 Modo replay (reproducir un PCAP como si fuera tráfico)
 
 ```bash
 gleipnir replay --pcap archivo.pcap --delay 1
 ```
 
-El parametro `--delay` agrega una espera entre paquetes. Este modo envia eventos
-al orquestador central `IDSEngine`, que coordina deteccion IP/MAC, DNS/HTTP,
-blacklist, threat intelligence, alertas y SQLite. No abre una interfaz real.
+`--delay 1` espera 1 segundo entre paquetes (simula tráfico en el tiempo).
 
-## 9. Modo live
-
-Captura trafico observado en una interfaz propia:
+### 9.5 Modo live (captura en vivo)
 
 ```bash
-sudo gleipnir live --interface wlan0
+sudo .venv/bin/gleipnir live --interface ens33
 ```
 
-Opciones adicionales:
-
-```bash
-sudo gleipnir live --interface wlan0 --packet-count 100 --timeout 60
-sudo gleipnir live --interface wlan0 --forever
-sudo gleipnir live --interface ens33 --debug-packets --packet-count 20 --use-pcap
-```
-
-La captura live usa Scapy y filtra ARP, IPv4 e IPv6. El monitor puede extraer
-DNS/HTTP cuando Scapy entrega esas capas o payloads legibles. No descifra HTTPS.
-El flujo live tambien usa `IDSEngine`.
-
-`--debug-packets` imprime diagnostico seguro por paquete: resumen, capas,
-clase Python, si llego como `Raw`, primeros 32 bytes en hexadecimal y si se
-pudo decodificar como Ethernet, IPv4 o IPv6. No imprime payloads completos.
-
-`--use-pcap` activa el backend libpcap de Scapy. Tambien puede habilitarse con
-`GLEIPNIR_SCAPY_USE_PCAP=true` en `.env`. Si libpcap no esta disponible,
-Gleipnir muestra un error claro y recomienda instalar `libpcap-dev` y
-`tcpdump`.
-
-`--forever` esta pensado para ejecucion 24/7, especialmente bajo `systemd`.
-Ejecuta ciclos supervisados de captura, reintenta errores recuperables, mantiene
-contadores acumulados y registra `LIVE_CAPTURE_HEALTH` cada
-`HEALTH_LOG_INTERVAL_SECONDS`. No oculta errores criticos como interfaz invalida,
-falta de permisos de captura o Scapy ausente.
-
-## 10. Permisos para captura live
-
-En Ubuntu, la captura de paquetes normalmente requiere permisos elevados:
-
-```bash
-sudo gleipnir live --interface wlan0
-```
-
-Como alternativa administrada, se pueden asignar capacidades al interprete del
-entorno virtual, evaluando el riesgo operativo:
-
-```bash
-sudo setcap cap_net_raw,cap_net_admin=eip $(readlink -f .venv/bin/python)
-getcap $(readlink -f .venv/bin/python)
-```
-
-La captura debe usarse solo en redes propias y autorizadas.
-
-## 11. Ejecucion 24/7 con systemd
-
-La plantilla del servicio esta en:
-
-```text
-deploy/systemd/gleipnir.service
-```
-
-El servicio esperado usa:
-
-```ini
-WorkingDirectory=/opt/gleipnir
-EnvironmentFile=/opt/gleipnir/.env
-ExecStart=/opt/gleipnir/.venv/bin/gleipnir live --interface <INTERFAZ> --forever
-Restart=always
-RestartSec=5
-```
-
-Flujo recomendado en Ubuntu 24.04 LTS:
-
-```bash
-sudo mkdir -p /opt/gleipnir
-sudo cp -a . /opt/gleipnir/
-cd /opt/gleipnir
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -e .
-cp .env.example .env
-chmod 600 .env
-gleipnir test-config
-gleipnir status
-```
-
-Despues se edita `<INTERFAZ>`, se copia el servicio a
-`/etc/systemd/system/gleipnir.service` y se gestiona con `systemctl`. No incluir
-credenciales en el archivo `.service`; deben permanecer en `.env`.
-
-## 12. Dashboard web seguro
-
-El dashboard permite visualizar eventos desde navegador. Para uso local:
-
-```bash
-gleipnir dashboard --host 127.0.0.1 --port 8080
-```
-
-Abrir:
-
-```text
-http://127.0.0.1:8080
-```
-
-Para red local/laboratorio con autenticacion activa:
-
-```bash
-gleipnir dashboard --host 0.0.0.0 --port 8080 --allow-lan
-```
-
-`0.0.0.0` expone el dashboard en todas las interfaces; no usarlo para internet.
-Si `DASHBOARD_AUTH_ENABLED=false`, la CLI bloquea `0.0.0.0` salvo con
-`--allow-unauthenticated-lan`, opcion no recomendada.
-
-Autenticacion:
-
-- `DASHBOARD_AUTH_ENABLED=true` activa login y sesion.
-- `DASHBOARD_USERS_FILE` apunta al JSON local de usuarios con `password_hash`.
-- `viewer` puede ver dashboard, eventos, filtros y graficas.
-- `admin` puede administrar whitelist/blacklist en `/admin/lists`.
-- Los usuarios con `enabled=false` no pueden iniciar sesion.
-- `DASHBOARD_SECRET_KEY` firma sesion y tokens CSRF.
-- `DASHBOARD_SESSION_TIMEOUT_MINUTES` controla expiracion de sesion.
-- `DASHBOARD_SESSION_COOKIE_SECURE=true` debe usarse cuando hay HTTPS.
-
-Proteccion CSRF:
-
-- Protege formularios administrativos de whitelist y blacklist.
-- Si el token falta o es invalido, la accion se rechaza con HTTP 400.
-- No se guardan tokens CSRF en auditoria.
-
-Cabeceras HTTP:
-
-- `X-Content-Type-Options: nosniff`.
-- `X-Frame-Options: DENY`.
-- `Referrer-Policy: no-referrer`.
-- `Cache-Control: no-store` en rutas autenticadas/administrativas.
-- CSP basica con `default-src 'self'`.
-
-Auditoria administrativa:
-
-- `ADMIN_LOGIN_SUCCESS`
-- `ADMIN_LOGIN_FAILED`
-- `ADMIN_LOGOUT`
-- `ADMIN_WHITELIST_ADD`
-- `ADMIN_WHITELIST_REMOVE`
-- `ADMIN_BLACKLIST_ADD`
-- `ADMIN_BLACKLIST_REMOVE`
-
-Los eventos guardan timestamp, usuario, accion, IP remota si existe, resultado
-y mensaje. Nunca guardan contrasenas, tokens CSRF, API keys ni secretos.
-
-HTTPS:
-
-- Basic Auth y login de formulario no cifran la conexion por si solos.
-- Para produccion real usar Nginx o Caddy como reverse proxy TLS.
-- Mantener Gleipnir escuchando en `127.0.0.1` detras del proxy.
-- Guia: `docs/dashboard_https_reverse_proxy.md`.
-
-Checklist minimo:
-
-- `.env` con permisos `600` y fuera de Git.
-- `DASHBOARD_SECRET_KEY` definido.
-- Usuario `admin` creado con `gleipnir user create --username admin --role admin`.
-- Usuario `viewer` creado si se necesita una cuenta de solo lectura.
-- Credenciales antiguas `DASHBOARD_USERNAME` y `DASHBOARD_PASSWORD` eliminadas
-  del `.env` despues de migrar.
-- `data/dashboard_users.json` con permisos `600` y fuera de Git.
-- Autenticacion activa si se usa `0.0.0.0`.
-- HTTPS si se usa fuera de localhost.
-- Firewall restringido.
-- Revisar logs/auditoria.
-
-## 13. Alertas SMTP
-
-Las alertas usan `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD` y
-`ADMIN_EMAIL` desde `.env`.
-
-El modulo `src/mailer.py` usa TLS mediante `starttls()`. Las pruebas usan mocks
-y no envian correos reales.
-
-### Cambiar el correo del administrador
-
-El destinatario de las alertas (`ADMIN_EMAIL`) se puede cambiar sin editar el
-codigo, de dos formas:
-
-- **CLI** (acceso local; identificacion/autenticacion/autorizacion las aporta el
-  sistema operativo y los permisos del `.env`):
-
-  ```bash
-  gleipnir admin-email show
-  gleipnir admin-email set --email nuevo-admin@example.org
-  ```
-
-  El comando valida el formato del correo y reescribe `ADMIN_EMAIL` en `.env`
-  conservando el resto de variables. Reinicia los procesos `live`/`replay`/
-  `dashboard` para aplicar el cambio. Si `ADMIN_EMAIL` esta definido como
-  variable de entorno del proceso, esta tiene prioridad sobre `.env`.
-
-- **Dashboard** (en la seccion protegida *Administracion de listas* →
-  *Correo del administrador*). Requiere `DASHBOARD_AUTH_ENABLED=true`, haber
-  iniciado sesion (autenticacion) y tener rol `admin` (autorizacion); el envio
-  esta protegido con token CSRF y la accion queda registrada en la bitacora de
-  auditoria con el usuario que la realizo.
-
-Si no llegan alertas:
-
-- Verificar usuario, password o password de aplicacion del proveedor SMTP.
-- Revisar carpeta de spam.
-- Confirmar que `SMTP_PORT` sea correcto, normalmente `587`.
-- Validar que el proveedor permita SMTP desde la red institucional.
-- Ejecutar `gleipnir test-config`.
-
-## 13b. Capa opcional IPS/Firewall (nftables)
-
-Gleipnir es un **IDS pasivo** por defecto: detecta, registra y alerta, pero **no
-bloquea** trafico. Existe una capa **opcional** de enforcement defensivo con
-`nftables`, pensada solo para red propia/laboratorio y desactivada por defecto.
-
-Configuracion (ver detalle en `docs/ips_firewall.md`):
-
-- `.env` solo guarda valores base: `IPS_CONFIG_FILE`, `IPS_BACKEND`, `IPS_TABLE`,
-  `IPS_CHAIN`.
-- La configuracion **operativa** vive en `data/ips_config.json` (editable por CLI
-  o dashboard) con: `ips_enabled`, `dry_run`, `allowlist_policy`,
-  `blacklist_policy`, `block_direction`, `blacklist_check_private`, `auto_apply`.
-
-Comandos (configurar, no aplica reglas):
-
-```bash
-gleipnir ips config show
-gleipnir ips enable            # ips_enabled=true
-gleipnir ips disable
-gleipnir ips dry-run-enable
-gleipnir ips dry-run-disable
-gleipnir ips policy allowlist --mode allow_registered
-gleipnir ips policy blacklist --mode block
-gleipnir ips direction --mode both
-gleipnir ips private-check enable
-gleipnir ips auto-apply disable
-```
-
-Comandos (ver/aplicar/remover):
-
-```bash
-gleipnir ips status            # estado, backend y disponibilidad de nft
-gleipnir ips dry-run           # muestra reglas SIN aplicarlas (recomendado)
-gleipnir ips rules             # ruleset nftables generado
-sudo .venv/bin/gleipnir ips apply    # requiere ips_enabled=true y dry_run=false
-sudo .venv/bin/gleipnir ips remove   # borra solo la tabla inet gleipnir
-```
-
-`ips apply` rechaza la ejecucion si `ips_enabled=false` o `dry_run=true` y explica
-como cambiarlo. Tambien se puede administrar desde el dashboard en `/admin/ips`
-(solo rol admin; no edita `.env` ni pide contrasenas sudo). La coincidencia por
-MAC solo es fiable en el mismo segmento Ethernet; en trafico enrutado se prefieren
-reglas por IP.
-
-## 14. Politicas de alerta
-
-Antes de llamar a SMTP, Gleipnir evalua una politica para evitar correos
-repetidos:
-
-- `ALERT_COOLDOWN_SECONDS`: tiempo minimo entre alertas del mismo grupo.
-- `ALERT_MAX_PER_MINUTE`: maximo de correos por minuto.
-
-Los eventos repetidos se siguen registrando en logs y SQLite. Cuando se suprime
-un correo, se guarda `ALERT_SUPPRESSED`; cuando se envia, se guarda
-`ALERT_SENT`. Las severidades normalizadas son:
-
-- `low`
-- `medium`
-- `high`
-- `critical`
-
-La severidad `critical` no se bloquea por cooldown ni por limite por minuto.
-El primer evento de un grupo nuevo se envia al administrador; la politica
-anti-spam solo debe suprimir eventos repetidos posteriores.
-
-## 15. Threat Intelligence
-
-El modulo `src/threat_intel.py` permite consultar:
-
-- AbuseIPDB.
-- VirusTotal.
-- Whois local mediante comando `whois`.
-
-Si `ABUSEIPDB_API_KEY` o `VIRUSTOTAL_API_KEY` estan vacias, el modulo devuelve
-estado `skipped` y el IDS continua funcionando. Los errores de red, timeout y
-rate limit se manejan como resultados estructurados.
-
-El cache se guarda por defecto en:
-
-```text
-LOG_DIR/threat_intel_cache.json
-```
-
-Las consultas de threat intelligence se hacen solo cuando existe una IP externa
-relevante o en blacklist; no se consultan APIs para todo el trafico.
-
-Cuando se genera `BLACKLISTED_EXTERNAL_IP`, Gleipnir envia primero una
-`ALERTA DE EMERGENCIA - IP peligrosa detectada` con timestamp, IP origen, IP
-destino, protocolo, tipo de riesgo, severidad y recomendacion de revision.
-Despues del enriquecimiento, si hay resultados AbuseIPDB, VirusTotal o Whois,
-envia un segundo correo de `Reporte Forense` al `ADMIN_EMAIL`. Ese reporte
-incluye la IP peligrosa, el tipo de riesgo, datos de reputacion, datos Whois,
-contacto de abuso si existe y una nota para que el administrador pueda
-investigar o reportar al proveedor.
-
-## 16. SQLite
-
-Los eventos del IDS se guardan en una base SQLite local configurada con:
-
-```env
-IDS_DB_PATH=data/gleipnir_events.db
-```
-
-La tabla `ids_events` conserva campos como tipo de evento, timestamp,
-severidad, IP/MAC origen, IP/MAC destino, protocolo, dominio, mensaje y
-`raw_json` sanitizado. No debe contener secretos.
-
-Eventos principales:
-
-- `AUTHORIZED_DEVICE`
-- `UNAUTHORIZED_DEVICE`
-- `DNS_EVENT`
-- `HTTP_EVENT`
-- `BLACKLISTED_EXTERNAL_IP`
-- `THREAT_INTEL_RESULT`
-- `ALERT_SENT`
-- `ALERT_SUPPRESSED`
-- `ADMIN_LOGIN_SUCCESS`
-- `ADMIN_LOGIN_FAILED`
-- `ADMIN_LOGOUT`
-- `ADMIN_WHITELIST_ADD`
-- `ADMIN_WHITELIST_REMOVE`
-- `ADMIN_BLACKLIST_ADD`
-- `ADMIN_BLACKLIST_REMOVE`
-
-## 17. Reportes
-
-Generar reportes acumulados desde SQLite:
+- Una **interfaz** es la tarjeta de red por la que pasa el tráfico. Vela con
+  `ip addr` y usa el nombre correcto (`ens33`, `eth0`, `wlan0`…).
+- Se usa **sudo** porque capturar tráfico requiere permisos de administrador.
+- Si `sudo gleipnir` da `command not found`, usa la ruta completa
+  `sudo .venv/bin/gleipnir` (ver nota del paso 4).
+
+Opciones útiles del modo live:
+
+| Opción | Qué hace |
+|---|---|
+| `--packet-count N` | Procesa como máximo N paquetes y termina |
+| `--timeout S` | Captura durante S segundos y termina |
+| `--forever` | Captura continua 24/7 (para servicio systemd) |
+| `--debug-packets` | Muestra un resumen seguro por paquete (diagnóstico) |
+| `--use-pcap` | Usa el motor libpcap de Scapy cuando está disponible |
+
+### 9.6 Reportes
 
 ```bash
 gleipnir report
-gleipnir report --format json
-gleipnir report --format csv
-gleipnir report --type UNAUTHORIZED_DEVICE
-gleipnir report --type BLACKLISTED_EXTERNAL_IP
-gleipnir report --since 2026-06-01 --until 2026-06-07
-gleipnir report --source-ip 192.168.1.10
-gleipnir report --domain ejemplo.com
-gleipnir report --severity high
 ```
 
-Los reportes se guardan en `REPORT_DIR` si esta definido; si no, en `LOG_DIR`.
-Se generan dos formatos:
+Opciones reales:
 
-- JSON: estructura completa con resumen y secciones por tipo de evento.
-- CSV: formato tabular, una fila por evento con columna `category`.
+| Opción | Qué hace |
+|---|---|
+| `--format both\|json\|csv` | Formato de salida (por defecto ambos) |
+| `--type UNAUTHORIZED_DEVICE` | Filtra por tipo de evento |
+| `--since YYYY-MM-DD` | Desde una fecha |
+| `--until YYYY-MM-DD` | Hasta una fecha |
+| `--source-ip 192.168.1.10` | Filtra por IP de origen |
+| `--domain ejemplo.com` | Filtra eventos DNS/HTTP por dominio |
+| `--severity high\|medium\|low\|info` | Filtra por severidad |
 
-Filtros disponibles:
+### 9.7 Estado / salud
 
-- Formato: `both`, `json`, `csv`.
-- Tipo de evento.
-- Rango de fechas.
-- IP origen.
-- Dominio DNS/HTTP.
-- Severidad.
+```bash
+gleipnir status
+```
 
-Los reportes no deben contener contrasenas, API keys, tokens ni secretos y
-muestran un resumen en consola.
+Hace una revisión local (healthcheck) y devuelve si todo está correcto.
 
-## 18. Politica de retencion
-
-Para evitar crecimiento ilimitado durante ejecucion 24/7:
+### 9.8 Mantenimiento
 
 ```bash
 gleipnir maintenance
 ```
 
-El comando:
+Aplica las políticas de retención (limpia eventos, reportes y logs antiguos).
 
-- Elimina eventos SQLite anteriores a `EVENT_RETENTION_DAYS`.
-- Conserva solo los ultimos `MAX_REPORTS_TO_KEEP` reportes generados por
-  Gleipnir.
-- Valida que los logs roten por tamano con `MAX_LOG_SIZE_MB`.
-
-No borra eventos recientes ni archivos que no coincidan con el patron de
-reportes `gleipnir_report_*.json` o `gleipnir_report_*.csv`.
-
-## 19. Pruebas
-
-Cuando las dependencias esten instaladas:
+### 9.9 Correo del administrador
 
 ```bash
-python -m pytest tests
+gleipnir admin-email show
+gleipnir admin-email set --email nuevo-admin@ejemplo.com
 ```
 
-Sin `pytest`, muchos modulos tambien pueden validarse con `unittest`:
+Cambia el destinatario de las alertas (escribe en `.env`; reinicia los procesos
+para aplicar).
+
+### 9.10 Dashboard
 
 ```bash
-python -m unittest discover -s tests
+gleipnir dashboard --host 127.0.0.1 --port 8080
+gleipnir dashboard --host 0.0.0.0 --port 8080 --allow-lan
 ```
 
-## 20. Troubleshooting basico
+`127.0.0.1` = solo el mismo equipo. `0.0.0.0 --allow-lan` = accesible desde otros
+equipos de la red local (ver sección 10).
 
-- Error de `.env`: ejecutar `gleipnir test-config`.
-- Estado operativo dudoso: ejecutar `gleipnir status`.
-- Error de permisos live: usar `sudo` o capacidades de captura autorizadas.
-- Live muestra `summary=Raw`: Scapy esta recibiendo bytes sin decodificar la
-  capa de enlace. Instalar `libpcap-dev tcpdump`, verificar la interfaz con
-  `sudo tcpdump -i ens33 -c 10 -nn` y probar
-  `sudo .venv/bin/gleipnir live --interface ens33 --debug-packets --packet-count 20 --use-pcap`.
-- Servicio 24/7 se reinicia: revisar `journalctl -u gleipnir -f` y logs.
-- No hay dominios HTTP: el trafico HTTPS no expone host/ruta HTTP en texto claro.
-- No hay resultados AbuseIPDB/VirusTotal: revisar API keys, timeout y rate
-  limit.
-- No se generan reportes: crear `LOG_DIR` o `REPORT_DIR` y revisar permisos de
-  escritura; confirmar `IDS_DB_PATH`.
-- Demasiadas alertas: ajustar `ALERT_COOLDOWN_SECONDS` y
-  `ALERT_MAX_PER_MINUTE`.
-- Crecimiento de datos: ejecutar `gleipnir maintenance` y revisar
-  `EVENT_RETENTION_DAYS`, `MAX_LOG_SIZE_MB` y `MAX_REPORTS_TO_KEEP`.
-- Alertas a spam: revisar reputacion del remitente, SPF/DKIM/DMARC del dominio
-  y reglas del servidor de correo.
-- Dashboard bloquea `0.0.0.0`: agregar `--allow-lan` solo si es red local
-  autorizada y mantener autenticacion activa.
-- Login dashboard falla: revisar `DASHBOARD_AUTH_ENABLED`, usuario, rol,
-  `DASHBOARD_SECRET_KEY` y timeout de sesion.
-- Administracion web rechaza cambios: verificar que el usuario tenga rol
-  `admin` y que el formulario tenga token CSRF valido.
+### 9.11 IPS/Firewall
+
+Comandos reales (detalle en sección 11):
+
+```bash
+gleipnir ips status
+gleipnir ips config show
+gleipnir ips config set --key allowlist_policy --value allow_registered
+gleipnir ips enable
+gleipnir ips disable
+gleipnir ips dry-run-enable
+gleipnir ips dry-run-disable
+gleipnir ips dry-run
+gleipnir ips rules
+sudo .venv/bin/gleipnir ips apply
+sudo .venv/bin/gleipnir ips remove
+gleipnir ips policy allowlist --mode monitor
+gleipnir ips policy allowlist --mode allow_registered
+gleipnir ips policy allowlist --mode block_unregistered
+gleipnir ips policy blacklist --mode monitor
+gleipnir ips policy blacklist --mode block
+gleipnir ips direction --mode outbound
+gleipnir ips direction --mode inbound
+gleipnir ips direction --mode both
+gleipnir ips private-check enable
+gleipnir ips private-check disable
+gleipnir ips auto-apply enable
+gleipnir ips auto-apply disable
+```
+
+---
+
+## 10. Uso del Dashboard
+
+> El Dashboard **no abre una ventana** automáticamente. Lo que hace es **levantar
+> un servidor web**. Tú abres el navegador y entras a la dirección indicada.
+
+### 10.1 Abrir el Dashboard en el mismo equipo
+
+```bash
+gleipnir dashboard --host 127.0.0.1 --port 8080
+```
+
+Abre el navegador en: `http://127.0.0.1:8080`
+
+[CAPTURA: Pantalla inicial del Dashboard / pantalla de login]
+
+### 10.2 Abrir el Dashboard desde otro equipo de la red
+
+```bash
+gleipnir dashboard --host 0.0.0.0 --port 8080 --allow-lan
+```
+
+Obtén la IP del servidor:
+
+```bash
+ip addr
+```
+
+Abre en el otro equipo: `http://IP_DEL_SERVIDOR:8080`
+
+⚠️ **Advertencias importantes:**
+
+- **No** expongas el Dashboard a internet.
+- Mantén la **autenticación activada** (`DASHBOARD_AUTH_ENABLED=true`).
+- Usa **HTTPS con un reverse proxy** si sale de un laboratorio (ver
+  `docs/security.md`).
+- **No** abras el puerto en el router.
+
+### 10.3 Pantalla principal
+
+Las tarjetas resumen los eventos:
+
+| Tarjeta | Significado |
+|---|---|
+| Total de eventos | Cuántos eventos hay en total |
+| Dispositivos autorizados | Equipos reconocidos (en whitelist) |
+| Dispositivos no autorizados | Equipos desconocidos detectados |
+| Eventos DNS | Consultas de dominios observadas |
+| Eventos HTTP | Peticiones web en texto claro observadas |
+| IPs externas en blacklist | Conexiones a IPs peligrosas |
+| Alertas enviadas | Correos de alerta enviados |
+
+[CAPTURA: Dashboard principal con tarjetas de eventos y gráficas]
+
+### 10.4 Eventos
+
+- Abajo verás los **últimos 50 eventos**.
+- Usa el formulario de **Filtros** (tipo, severidad, IP, dominio, fechas).
+- Haz clic en el **ID** de un evento para ver su **detalle**.
+- La **severidad** indica gravedad: `INFO` < `BAJA` < `MEDIA` < `ALTA`.
+
+[CAPTURA: Reporte de eventos / tabla de últimos eventos con filtros]
+
+### 10.5 Administración (solo admin)
+
+- **Administrar listas** (`/admin/lists`): whitelist y blacklist.
+- **IPS/Firewall** (`/admin/ips`): configuración del IPS opcional.
+
+### 10.6 Seguridad del Dashboard
+
+- **Login** obligatorio cuando `DASHBOARD_AUTH_ENABLED=true`.
+- **Roles**: viewer (ver) y admin (administrar).
+- Protección **CSRF** en los formularios.
+- Contraseñas **hasheadas** (no en texto plano).
+- Usa **Cerrar sesión** al terminar.
+- **Nunca** lo expongas a internet.
+
+---
+
+## 11. Configuración IPS/Firewall
+
+Recuerda la diferencia:
+
+- **IDS** = observa y alerta (por defecto).
+- **IPS** = puede **aplicar reglas** para bloquear/permitir.
+
+El IPS viene **desactivado** por seguridad. **Activar la configuración no es lo
+mismo que aplicar reglas reales:**
+
+- *Activar/cambiar config* solo edita `data/ips_config.json`. **No** toca el firewall.
+- *Aplicar reglas reales* requiere `ips_enabled=true`, `dry_run=false` y ejecutar
+  `ips apply` con **sudo**.
+
+### 11.1 Ver estado
+
+```bash
+gleipnir ips status
+```
+
+### 11.2 Ver configuración
+
+```bash
+gleipnir ips config show
+```
+
+### 11.3 Simular reglas (no bloquea nada)
+
+```bash
+gleipnir ips dry-run
+```
+
+> ✅ `dry-run` **no bloquea tráfico**: solo muestra las reglas que se aplicarían.
+
+### 11.4 Activar IPS en la configuración
+
+```bash
+gleipnir ips enable
+```
+
+(Esto **no** aplica reglas todavía; solo marca `ips_enabled=true`.)
+
+### 11.5 Permitir aplicación real
+
+```bash
+gleipnir ips dry-run-disable
+```
+
+### 11.6 Aplicar reglas reales (requiere sudo y nftables)
+
+```bash
+sudo .venv/bin/gleipnir ips apply
+```
+
+### 11.7 Quitar las reglas de Gleipnir
+
+```bash
+sudo .venv/bin/gleipnir ips remove
+```
+
+(Borra **solo** la tabla `inet gleipnir`; nunca toca otras reglas del sistema.)
+
+### 11.8 Configurar desde el Dashboard
+
+1. Entra como **admin**.
+2. Abre **IPS/Firewall** (`/admin/ips`).
+3. Revisa el **estado** actual.
+4. Cambia la **política** (allowlist/blacklist, dirección, etc.).
+5. Pulsa **Guardar configuración**.
+6. Pulsa **Ver reglas (dry-run)** para revisarlas.
+7. Para aplicar reglas reales, se recomienda hacerlo desde la **CLI con sudo**.
+
+> 🔒 El Dashboard **no** pide ni guarda contraseñas sudo, y **no** edita `.env`.
+> Si el proceso web no tiene permisos root, te dirá:
+> *"El dashboard no tiene permisos para aplicar reglas nftables. Usa
+> sudo .venv/bin/gleipnir ips apply desde terminal."*
+
+[CAPTURA: Configuración IPS desde el Dashboard (/admin/ips)]
+
+---
+
+## 12. Interpretación de alertas y eventos
+
+### 12.1 Eventos comunes
+
+| Evento | Qué significa |
+|---|---|
+| `AUTHORIZED_DEVICE` | Un equipo **registrado** (en whitelist) fue visto. Es normal. |
+| `UNAUTHORIZED_DEVICE` | Un equipo **desconocido** fue detectado. Revísalo. |
+| `DNS_EVENT` | Se registró una consulta de dominio (DNS). |
+| `HTTP_EVENT` | Se registró una petición web en texto claro (HTTP). |
+| `BLACKLISTED_EXTERNAL_IP` | Tráfico relacionado con una IP **peligrosa**. Alerta. |
+| `ALERT_SENT` | Se **envió** un correo de alerta. |
+| `IPS_BLOCKED_BLACKLISTED_IP` | El IPS bloqueó (o simuló bloquear) una IP de la blacklist. |
+| `IPS_BLOCKED_UNREGISTERED_DEVICE` | El IPS bloqueó (o simuló) un equipo no registrado. |
+
+> En modo **dry-run**, los eventos de IPS muestran la acción `dry_run_block`
+> (simulado), no `blocked`.
+
+### 12.2 Dispositivo no autorizado
+
+Significa que se detectó un equipo que **no está en la whitelist**. Revisa:
+
+- **IP** y **MAC** del equipo.
+- **Hora** (timestamp).
+- Identifica el **equipo físico**.
+- Decide: ¿es legítimo? → agrégalo a la whitelist. ¿No lo reconoces? → investiga.
+
+### 12.3 IP peligrosa
+
+Significa que hubo tráfico con una IP de la blacklist. Revisa:
+
+- **IP destino** (la peligrosa) y **tipo de riesgo** (Botnet, Malware, etc.).
+- **Equipo origen** (quién se conectó).
+- Si hubo consulta **Abuse/Whois** (datos del proveedor).
+
+### 12.4 Alerta de emergencia — qué hacer
+
+1. Identifica el **equipo origen**.
+2. Si corresponde, **desconéctalo o revísalo**.
+3. Revisa los **reportes**.
+4. Revisa el **contacto de abuso** del proveedor.
+5. **Reporta** al área correspondiente si aplica.
+
+### 12.5 Correo forense
+
+Cuando se detecta una IP peligrosa, además de la alerta de emergencia llega un
+**Reporte Forense** que puede incluir:
+
+- **AbuseIPDB**: reputación de la IP.
+- **Whois**: a quién pertenece y su contacto de abuso.
+- **VirusTotal**: análisis si está disponible.
+- **Contacto abuse**: correo para reportar.
+
+> ℹ️ Limitación: estos datos dependen de información **pública** y de tener API
+> keys configuradas. Si faltan, Gleipnir sigue funcionando y lo indica.
+
+[CAPTURA: Alerta de correo recibida (asunto ALERTA DE EMERGENCIA)]
+
+---
+
+## 13. Reportes
+
+- Un reporte contiene los eventos del IDS/IPS en **JSON** y/o **CSV**.
+- Se guardan en la carpeta de reportes (`logs/reports/` por defecto).
+- Los secretos se **ocultan** en los reportes.
+
+```bash
+gleipnir report
+gleipnir report --format json
+gleipnir report --format csv
+```
+
+Cómo leer las columnas:
+
+| Campo | Significado |
+|---|---|
+| `timestamp` | Fecha y hora del evento |
+| `event_type` | Tipo de evento (ver tabla 12.1) |
+| `severity` | Gravedad (INFO/BAJA/MEDIA/ALTA) |
+| `source_ip` | IP de origen |
+| `destination_ip` | IP de destino |
+| `domain` | Dominio (en eventos DNS/HTTP) |
+| `message` | Descripción del evento |
+
+[CAPTURA: Reporte generado en terminal]
+[CAPTURA: Reporte / eventos visibles en el Dashboard]
+
+---
+
+## 14. Ejemplos de operación diaria
+
+### Escenario 1: Agregar una computadora nueva
+
+1. Obtén su **IP** y **MAC** (`ip addr` en ese equipo).
+2. Agrégala a la whitelist:
+   `gleipnir whitelist add --ip <IP> --mac <MAC> --description "<nombre>"`.
+3. Valida: `gleipnir whitelist validate`.
+4. Confírmalo en el Dashboard.
+
+### Escenario 2: Revisar si hubo dispositivos desconocidos
+
+1. Abre el Dashboard.
+2. Mira la tarjeta **Dispositivos no autorizados**.
+3. Entra a **Eventos**.
+4. Abre el detalle de cada `UNAUTHORIZED_DEVICE`.
+5. Decide: agregar a whitelist o investigar.
+
+### Escenario 3: Revisar sitios visitados
+
+1. Genera/abre un reporte de eventos DNS/HTTP:
+   `gleipnir report --type DNS_EVENT` o filtra por dominio.
+2. Filtra por equipo: `--source-ip <IP>`.
+3. Revisa los dominios.
+
+### Escenario 4: IP peligrosa detectada
+
+1. Revisa la **alerta de emergencia** (correo).
+2. Revisa la **IP origen** (equipo interno).
+3. Revisa los datos **Abuse/Whois** del reporte forense.
+4. Genera un reporte: `gleipnir report --type BLACKLISTED_EXTERNAL_IP`.
+5. Toma acción defensiva.
+
+### Escenario 5: Activar IPS en laboratorio
+
+1. `gleipnir ips status` (ver estado).
+2. `gleipnir ips dry-run` (simular reglas).
+3. Revisa las reglas mostradas.
+4. `gleipnir ips enable` y `gleipnir ips dry-run-disable`.
+5. `sudo .venv/bin/gleipnir ips apply` (aplicar).
+6. Confirma con `gleipnir ips status`.
+7. Si algo falla: `sudo .venv/bin/gleipnir ips remove`.
+
+---
+
+## 15. Troubleshooting básico (solución de problemas)
+
+| # | Problema | Causa probable | Solución paso a paso | Comando útil |
+|---|---|---|---|---|
+| 1 | `sudo: gleipnir: command not found` | `sudo` no ve el entorno virtual | Usa la ruta completa al binario | `sudo .venv/bin/gleipnir live --interface ens33` |
+| 2 | `Permission denied` al capturar | Captura necesita permisos | Ejecuta con `sudo` (ruta completa) | `sudo .venv/bin/gleipnir live --interface ens33` |
+| 3 | No llegan correos | SMTP mal configurado o sin internet | Revisa `SMTP_HOST/PORT/USER/PASSWORD/ADMIN_EMAIL`, conexión y TLS/STARTTLS | `gleipnir test-config` |
+| 4 | El correo llega a spam | Filtros del proveedor | Revisa carpeta spam; marca el remitente como seguro; usa correo institucional; revisa SPF/DKIM/DMARC del dominio; evita asuntos genéricos; pide al admin de correo permitir el remitente; prueba otro `ADMIN_EMAIL`; no uses cuentas personales si hay políticas | — |
+| 5 | `SMTP authentication failed` | Usuario/clave o puerto incorrectos | Verifica contraseña; usa "contraseña de aplicación" si el proveedor la exige; revisa puerto `587`/`465` y TLS | `gleipnir test-config` |
+| 6 | El Dashboard no abre | No está corriendo / puerto / host | Verifica que `gleipnir dashboard` está activo, el puerto, el firewall y `127.0.0.1` vs `0.0.0.0` | `gleipnir dashboard --host 127.0.0.1 --port 8080` |
+| 7 | No puedo entrar al Dashboard (login) | Usuario inexistente/deshabilitado | Crea/activa usuario; cambia contraseña | `gleipnir user list` / `gleipnir user change-password --username admin` |
+| 8 | No accedo desde otro equipo | Host/IP/red/firewall | Usa `--host 0.0.0.0 --allow-lan`, verifica IP (`ip addr`), misma red y firewall | `gleipnir dashboard --host 0.0.0.0 --port 8080 --allow-lan` |
+| 9 | Puerto 8080 ocupado | Otro proceso usa el puerto | Usa otro puerto | `gleipnir dashboard --port 8081` |
+| 10 | Olvidé la contraseña del Dashboard | — | Cambia la contraseña con el comando (no edites hashes a mano) | `gleipnir user change-password --username admin` |
+| 11 | `dashboard_users.json` con permisos inseguros | Permisos del archivo abiertos | El Dashboard avisa; restringe permisos del archivo | `chmod 600 data/dashboard_users.json` |
+| 12 | No aparecen eventos | Aún no hay tráfico/eventos | Genera eventos con `replay` de un PCAP de prueba o captura en vivo | `gleipnir replay --pcap archivo.pcap --delay 1` |
+| 13 | `live` muestra paquetes `Raw` | Falta backend de captura | Instala `libpcap-dev`/`tcpdump`, prueba `tcpdump`, usa `--use-pcap`, revisa la interfaz | `sudo apt install -y libpcap-dev tcpdump` |
+| 14 | No se detectan DNS/HTTP | HTTPS cifra; DNS puede ir cifrado | HTTPS no muestra rutas; DNS por DoH/DoT no es visible; verifica que haya tráfico; prueba con un PCAP | `gleipnir replay --pcap archivo.pcap` |
+| 15 | `ips apply` no aplica reglas | IPS apagado o en dry-run / sin sudo | Activa IPS, desactiva dry-run y usa sudo | `gleipnir ips enable` → `gleipnir ips dry-run-disable` → `sudo .venv/bin/gleipnir ips apply` |
+| 16 | `nft: command not found` | nftables no instalado | Instálalo | `sudo apt install -y nftables` |
+| 17 | AbuseIPDB/VirusTotal no responden | Sin API key / rate limit / timeout | Configura `ABUSEIPDB_API_KEY`/`VIRUSTOTAL_API_KEY`; espera si hay límite; el IDS sigue funcionando | `gleipnir test-config` |
+| 18 | Whois sin contacto de abuso | El proveedor no publica el dato | Es una limitación de datos públicos; usa la info disponible | — |
+| 19 | El sistema no bloquea tráfico | Es IDS pasivo por defecto | El IPS debe activarse; `dry-run` no bloquea; `apply` sí | `gleipnir ips status` |
+
+---
+
+## 16. Buenas prácticas de seguridad
+
+- ❌ **No subas `.env` a Git** ni lo compartas.
+- ❌ **No compartas contraseñas.**
+- ✅ Usa **usuarios separados** viewer/admin.
+- ✅ Usa **contraseñas fuertes**.
+- ❌ **No expongas el Dashboard a internet.**
+- ✅ Usa **HTTPS con reverse proxy** si sale de localhost.
+- ✅ **Revisa los logs** periódicamente.
+- ✅ **Remueve las reglas IPS** (`ips remove`) si causan problemas.
+- ✅ **Prueba primero en `dry-run`** antes de aplicar reglas reales.
+- ✅ Úsalo solo en **red propia o laboratorio autorizado**.
+
+---
+
+## 17. Glosario
+
+| Término | Definición sencilla |
+|---|---|
+| **IDS** | Sistema que **detecta** y avisa, sin bloquear |
+| **IPS** | Sistema que además puede **bloquear/permitir** tráfico |
+| **Firewall** | "Muro" que filtra tráfico según reglas |
+| **Whitelist** | Lista de equipos **autorizados** |
+| **Blacklist** | Lista de IPs **peligrosas** |
+| **IP** | Dirección de un equipo en la red |
+| **MAC** | Identificador físico de la tarjeta de red |
+| **DNS** | Servicio que traduce nombres (dominios) a IPs |
+| **HTTP** | Protocolo web **sin cifrar** |
+| **HTTPS** | Protocolo web **cifrado** (no muestra rutas) |
+| **SMTP** | Protocolo para **enviar correos** |
+| **PCAP** | Archivo con tráfico de red capturado |
+| **Dashboard** | Panel web para ver eventos |
+| **CLI** | Operación por línea de comandos (terminal) |
+| **nftables** | Firewall de Linux usado por el IPS |
+| **Abuse contact** | Correo para **reportar abusos** de una IP |
+| **Whois** | Consulta de a quién pertenece una IP/dominio |
+| **Threat Intelligence** | Información de reputación/amenazas de IPs |
+
+---
+
+## 18. Comandos rápidos
+
+| Tarea | Comando | Qué hace | ¿sudo? |
+|---|---|---|---|
+| Ver ayuda | `gleipnir --help` | Lista todos los comandos | No |
+| Probar config | `gleipnir test-config` | Valida `.env` (oculta secretos) | No |
+| Estado/salud | `gleipnir status` | Healthcheck local | No |
+| Mantenimiento | `gleipnir maintenance` | Aplica retención de datos | No |
+| Analizar PCAP | `gleipnir offline --pcap archivo.pcap` | Procesa un PCAP | No |
+| Reproducir PCAP | `gleipnir replay --pcap archivo.pcap --delay 1` | Simula tráfico | No |
+| Captura en vivo | `sudo .venv/bin/gleipnir live --interface ens33` | Escucha la red | Sí |
+| Generar reporte | `gleipnir report` | Crea JSON/CSV | No |
+| Whitelist: agregar | `gleipnir whitelist add --ip <IP> --mac <MAC> --description "<txt>"` | Autoriza un equipo | No |
+| Whitelist: listar | `gleipnir whitelist list` | Muestra autorizados | No |
+| Whitelist: validar | `gleipnir whitelist validate` | Revisa el archivo | No |
+| Whitelist: eliminar | `gleipnir whitelist remove --ip <IP>` | Quita un equipo | No |
+| Blacklist: agregar | `gleipnir blacklist add --ip <IP> --reason "Botnet"` | Marca IP peligrosa | No |
+| Blacklist: listar | `gleipnir blacklist list` | Muestra IPs peligrosas | No |
+| Blacklist: validar | `gleipnir blacklist validate` | Revisa el archivo | No |
+| Blacklist: eliminar | `gleipnir blacklist remove --ip <IP>` | Quita una IP | No |
+| Usuario: crear | `gleipnir user create --username <u> --role admin\|viewer` | Crea usuario del Dashboard | No |
+| Usuario: listar | `gleipnir user list` | Lista usuarios | No |
+| Usuario: cambiar clave | `gleipnir user change-password --username <u>` | Cambia contraseña | No |
+| Usuario: deshabilitar | `gleipnir user disable --username <u>` | Desactiva usuario | No |
+| Usuario: habilitar | `gleipnir user enable --username <u>` | Activa usuario | No |
+| Usuario: migrar `.env` | `gleipnir user migrate-env` | Migra credenciales legadas del `.env` | No |
+| Correo admin: ver | `gleipnir admin-email show` | Muestra `ADMIN_EMAIL` | No |
+| Correo admin: cambiar | `gleipnir admin-email set --email <correo>` | Cambia el destinatario | No |
+| Dashboard local | `gleipnir dashboard --host 127.0.0.1 --port 8080` | Panel web local | No |
+| Dashboard LAN | `gleipnir dashboard --host 0.0.0.0 --port 8080 --allow-lan` | Panel accesible en la red | No |
+| IPS: estado | `gleipnir ips status` | Estado del IPS | No |
+| IPS: ver config | `gleipnir ips config show` | Config operativa | No |
+| IPS: cambiar clave config | `gleipnir ips config set --key <k> --value <v>` | Cambia un valor | No |
+| IPS: activar | `gleipnir ips enable` | `ips_enabled=true` (no aplica) | No |
+| IPS: desactivar | `gleipnir ips disable` | `ips_enabled=false` | No |
+| IPS: dry-run on/off | `gleipnir ips dry-run-enable` / `dry-run-disable` | Modo simulación | No |
+| IPS: simular | `gleipnir ips dry-run` | Muestra reglas sin aplicar | No |
+| IPS: ver reglas | `gleipnir ips rules` | Imprime el ruleset nftables | No |
+| IPS: aplicar | `sudo .venv/bin/gleipnir ips apply` | Aplica reglas reales | Sí |
+| IPS: remover | `sudo .venv/bin/gleipnir ips remove` | Borra solo la tabla de Gleipnir | Sí |
+| IPS: política allowlist | `gleipnir ips policy allowlist --mode monitor\|allow_registered\|block_unregistered` | Cambia política allowlist | No |
+| IPS: política blacklist | `gleipnir ips policy blacklist --mode monitor\|block` | Cambia política blacklist | No |
+| IPS: dirección | `gleipnir ips direction --mode outbound\|inbound\|both` | Dirección de bloqueo | No |
+| IPS: IPs privadas | `gleipnir ips private-check enable\|disable` | Revisar IPs privadas en blacklist | No |
+| IPS: auto-apply | `gleipnir ips auto-apply enable\|disable` | Permitir aplicar desde Dashboard | No |
+
+---
+
+## Capturas de pantalla pendientes (tomar manualmente)
+
+1. `[CAPTURA: Comando gleipnir --help]`
+2. `[CAPTURA: Salida de gleipnir test-config con secretos ocultos]`
+3. `[CAPTURA: Alta de IP/MAC en whitelist desde CLI]`
+4. `[CAPTURA: Formulario de alta de IP/MAC en whitelist en el Dashboard]`
+5. `[CAPTURA: Pantalla inicial del Dashboard / login]`
+6. `[CAPTURA: Dashboard principal con tarjetas de eventos y gráficas]`
+7. `[CAPTURA: Reporte de eventos / tabla de últimos eventos con filtros]`
+8. `[CAPTURA: Alerta de correo recibida (ALERTA DE EMERGENCIA)]`
+9. `[CAPTURA: Configuración IPS desde el Dashboard (/admin/ips)]`
+10. `[CAPTURA: Reporte generado en terminal]`
+11. `[CAPTURA: Reporte / eventos visibles en el Dashboard]`
+
+---
+
+> Documentación relacionada: `README.md` (resumen e instalación),
+> `docs/ips_firewall.md` (IPS en detalle), `docs/dashboard.md` (Dashboard),
+> `docs/security.md` (seguridad), `docs/credenciales.md` (protección de
+> secretos), `docs/troubleshooting.md` (diagnósticos avanzados).
