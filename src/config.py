@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Mapping
 
 from dotenv import dotenv_values
 
+
+EMAIL_PATTERN = re.compile(r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$")
 
 REQUIRED_ENV_VARS = (
     "SMTP_HOST",
@@ -48,6 +51,19 @@ class Config:
     threat_intel_cache_ttl_seconds: int = 86_400
     alert_cooldown_seconds: int = 300
     alert_max_per_minute: int = 5
+    whitelist_auth_policy: str = "strict"
+    blacklist_check_private: bool = False
+    ips_enabled: bool = False
+    ips_backend: str = "nftables"
+    ips_dry_run: bool = True
+    ips_table: str = "gleipnir"
+    ips_chain: str = "gleipnir_filter"
+    ips_config_file: Path = field(
+        default_factory=lambda: Path("data/ips_config.json")
+    )
+    ips_allowlist_policy: str = "monitor"
+    ips_blacklist_policy: str = "block"
+    ips_block_direction: str = "both"
     gleipnir_interface: str | None = None
     gleipnir_mode: str = "live"
     gleipnir_scapy_use_pcap: bool = False
@@ -91,6 +107,17 @@ class Config:
             "threat_intel_cache_ttl_seconds": self.threat_intel_cache_ttl_seconds,
             "alert_cooldown_seconds": self.alert_cooldown_seconds,
             "alert_max_per_minute": self.alert_max_per_minute,
+            "whitelist_auth_policy": self.whitelist_auth_policy,
+            "blacklist_check_private": self.blacklist_check_private,
+            "ips_enabled": self.ips_enabled,
+            "ips_backend": self.ips_backend,
+            "ips_dry_run": self.ips_dry_run,
+            "ips_table": self.ips_table,
+            "ips_chain": self.ips_chain,
+            "ips_config_file": str(self.ips_config_file),
+            "ips_allowlist_policy": self.ips_allowlist_policy,
+            "ips_blacklist_policy": self.ips_blacklist_policy,
+            "ips_block_direction": self.ips_block_direction,
             "gleipnir_interface": self.gleipnir_interface,
             "gleipnir_mode": self.gleipnir_mode,
             "gleipnir_scapy_use_pcap": self.gleipnir_scapy_use_pcap,
@@ -174,6 +201,48 @@ def load_config(
             "ALERT_MAX_PER_MINUTE",
             default=5,
             minimum=1,
+        ),
+        whitelist_auth_policy=_optional_choice(
+            values,
+            "WHITELIST_AUTH_POLICY",
+            default="strict",
+            choices=("strict", "ip_fallback"),
+        ),
+        blacklist_check_private=_optional_bool(
+            values,
+            "BLACKLIST_CHECK_PRIVATE",
+            default=False,
+        ),
+        ips_enabled=_optional_bool(values, "IPS_ENABLED", default=False),
+        ips_backend=_optional_choice(
+            values,
+            "IPS_BACKEND",
+            default="nftables",
+            choices=("nftables",),
+        ),
+        ips_dry_run=_optional_bool(values, "IPS_DRY_RUN", default=True),
+        ips_table=_optional(values, "IPS_TABLE") or "gleipnir",
+        ips_chain=_optional(values, "IPS_CHAIN") or "gleipnir_filter",
+        ips_config_file=Path(
+            _optional(values, "IPS_CONFIG_FILE") or "data/ips_config.json"
+        ).expanduser(),
+        ips_allowlist_policy=_optional_choice(
+            values,
+            "IPS_ALLOWLIST_POLICY",
+            default="monitor",
+            choices=("monitor", "allow_registered", "block_unregistered"),
+        ),
+        ips_blacklist_policy=_optional_choice(
+            values,
+            "IPS_BLACKLIST_POLICY",
+            default="block",
+            choices=("monitor", "block"),
+        ),
+        ips_block_direction=_optional_choice(
+            values,
+            "IPS_BLOCK_DIRECTION",
+            default="both",
+            choices=("outbound", "inbound", "both"),
         ),
         gleipnir_interface=_optional(values, "GLEIPNIR_INTERFACE"),
         gleipnir_mode=_optional_choice(
@@ -381,6 +450,54 @@ def _optional_choice(
         allowed = ", ".join(choices)
         raise ConfigError(f"{name} must be one of: {allowed}")
 
+    return normalized
+
+
+def validate_email(value: str) -> str:
+    """Validate an email address and return it trimmed."""
+    cleaned = (value or "").strip()
+    if not EMAIL_PATTERN.match(cleaned):
+        raise ConfigError(f"Invalid email address: {value}")
+
+    return cleaned
+
+
+def set_env_value(env_file: str | Path, key: str, value: str) -> None:
+    """Insert or update ``KEY=value`` in a .env file, preserving other lines.
+
+    Comments, blank lines, and unrelated variables are kept intact. The first
+    matching assignment is replaced; if the key is absent it is appended.
+    """
+    path = Path(env_file)
+    lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+    new_line = f"{key}={value}"
+    replaced = False
+
+    for index, raw_line in enumerate(lines):
+        stripped = raw_line.strip()
+        if stripped.startswith("#") or "=" not in stripped:
+            continue
+        if stripped.split("=", 1)[0].strip() == key:
+            lines[index] = new_line
+            replaced = True
+            break
+
+    if not replaced:
+        lines.append(new_line)
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def set_admin_email(email: str, env_file: str | Path = ".env") -> str:
+    """Validate and persist ``ADMIN_EMAIL`` into the .env file.
+
+    Returns the normalized email that was written. The change takes effect the
+    next time configuration is loaded (restart running live/replay/dashboard
+    processes). A process environment ``ADMIN_EMAIL`` still overrides the file.
+    """
+    normalized = validate_email(email)
+    set_env_value(env_file, "ADMIN_EMAIL", normalized)
     return normalized
 
 

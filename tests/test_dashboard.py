@@ -1146,6 +1146,217 @@ def test_dashboard_optional_admin_credentials_can_manage_lists(tmp_path: Path) -
     assert list_blacklist_entries(config.blacklist_file)[0].ip == "8.8.4.4"
 
 
+def test_dashboard_viewer_cannot_access_admin_ips(tmp_path: Path) -> None:
+    config = _config(
+        tmp_path / "events.db",
+        dashboard_auth_enabled=True,
+        dashboard_username="viewer",
+        dashboard_password="viewer-password",
+        dashboard_role="viewer",
+    )
+    app = create_app(config=config)
+    auth_header = {"Authorization": _basic_auth("viewer", "viewer-password")}
+
+    response = app.test_client().get("/admin/ips", headers=auth_header)
+    assert response.status_code == 403
+
+
+def test_dashboard_admin_can_view_ips_page(tmp_path: Path) -> None:
+    config = _config(
+        tmp_path / "events.db",
+        dashboard_auth_enabled=True,
+        dashboard_username="admin",
+        dashboard_password="admin-password",
+        dashboard_role="admin",
+    )
+    app = create_app(config=config)
+    auth_header = {"Authorization": _basic_auth("admin", "admin-password")}
+
+    response = app.test_client().get("/admin/ips", headers=auth_header)
+    assert response.status_code == 200
+    assert "IPS/Firewall".encode("utf-8") in response.data
+    assert b"ips_enabled" in response.data
+
+
+def test_dashboard_admin_ips_post_without_csrf_fails(tmp_path: Path) -> None:
+    config = _config(
+        tmp_path / "events.db",
+        dashboard_auth_enabled=True,
+        dashboard_username="admin",
+        dashboard_password="admin-password",
+        dashboard_role="admin",
+    )
+    app = create_app(config=config)
+    auth_header = {"Authorization": _basic_auth("admin", "admin-password")}
+
+    response = app.test_client().post(
+        "/admin/ips",
+        data={"action": "ips_update", "ips_enabled": "true"},
+        headers=auth_header,
+    )
+    assert response.status_code == 400
+
+
+def test_dashboard_admin_ips_update_saves_config(tmp_path: Path) -> None:
+    config = _config(
+        tmp_path / "events.db",
+        dashboard_auth_enabled=True,
+        dashboard_username="admin",
+        dashboard_password="admin-password",
+        dashboard_role="admin",
+    )
+    app = create_app(config=config)
+    client = app.test_client()
+    auth_header = {"Authorization": _basic_auth("admin", "admin-password")}
+    csrf_token = _csrf_token(client, auth_header)
+
+    response = client.post(
+        "/admin/ips",
+        data={
+            "action": "ips_update",
+            "csrf_token": csrf_token,
+            "ips_enabled": "true",
+            "dry_run": "true",
+            "allowlist_policy": "block_unregistered",
+            "blacklist_policy": "block",
+            "block_direction": "outbound",
+            "blacklist_check_private": "false",
+            "auto_apply": "false",
+        },
+        headers=auth_header,
+        environ_overrides={"REMOTE_ADDR": "192.168.10.90"},
+    )
+
+    from src.ips_config import load_ips_config
+
+    assert response.status_code == 200
+    assert "Configuracion IPS actualizada".encode("utf-8") in response.data
+    saved = load_ips_config(config)
+    assert saved["ips_enabled"] is True
+    assert saved["allowlist_policy"] == "block_unregistered"
+    assert saved["block_direction"] == "outbound"
+
+    assert len(_fetch_events(config.ids_db_path, "ADMIN_IPS_CONFIG_CHANGED")) >= 1
+    assert len(_fetch_events(config.ids_db_path, "ADMIN_IPS_ENABLED")) >= 1
+
+
+def test_dashboard_admin_ips_apply_without_permissions_shows_clear_error(tmp_path: Path) -> None:
+    config = _config(
+        tmp_path / "events.db",
+        dashboard_auth_enabled=True,
+        dashboard_username="admin",
+        dashboard_password="admin-password",
+        dashboard_role="admin",
+    )
+    # Make IPS effectively active with auto_apply so we reach the permission gate.
+    from src.ips_config import save_ips_config
+
+    save_ips_config(
+        {"ips_enabled": True, "dry_run": False, "auto_apply": True},
+        config,
+    )
+    app = create_app(config=config)
+    client = app.test_client()
+    auth_header = {"Authorization": _basic_auth("admin", "admin-password")}
+    csrf_token = _csrf_token(client, auth_header)
+
+    with patch("src.firewall.is_nft_available", return_value=False):
+        response = client.post(
+            "/admin/ips",
+            data={"action": "ips_apply", "csrf_token": csrf_token},
+            headers=auth_header,
+        )
+
+    assert response.status_code == 200
+    assert b"no tiene permisos" in response.data
+    assert b"sudo .venv/bin/gleipnir ips apply" in response.data
+
+
+def test_dashboard_admin_ips_apply_blocked_when_auto_apply_false(tmp_path: Path) -> None:
+    config = _config(
+        tmp_path / "events.db",
+        dashboard_auth_enabled=True,
+        dashboard_username="admin",
+        dashboard_password="admin-password",
+        dashboard_role="admin",
+    )
+    app = create_app(config=config)
+    client = app.test_client()
+    auth_header = {"Authorization": _basic_auth("admin", "admin-password")}
+    csrf_token = _csrf_token(client, auth_header)
+
+    response = client.post(
+        "/admin/ips",
+        data={"action": "ips_apply", "csrf_token": csrf_token},
+        headers=auth_header,
+    )
+
+    assert response.status_code == 200
+    assert b"auto_apply=true" in response.data
+
+
+def test_dashboard_admin_can_change_admin_email(tmp_path: Path) -> None:
+    config = _config(
+        tmp_path / "events.db",
+        dashboard_auth_enabled=True,
+        dashboard_username="admin",
+        dashboard_password="secret-password",
+        dashboard_role="admin",
+    )
+    config.admin_email = "old@example.org"
+    app = create_app(config=config)
+    client = app.test_client()
+    auth_header = {"Authorization": _basic_auth("admin", "secret-password")}
+    csrf_token = _csrf_token(client, auth_header)
+
+    get_response = client.get("/admin/lists", headers=auth_header)
+    assert b"Correo del administrador" in get_response.data
+    assert b"old@example.org" in get_response.data
+
+    with patch("src.config.set_admin_email", return_value="new@example.org") as setter:
+        response = client.post(
+            "/admin/lists",
+            data={
+                "action": "admin_email_set",
+                "csrf_token": csrf_token,
+                "admin_email": "new@example.org",
+            },
+            headers=auth_header,
+            environ_overrides={"REMOTE_ADDR": "192.168.10.70"},
+        )
+
+    setter.assert_called_once_with("new@example.org")
+    assert response.status_code == 200
+    assert "Correo del administrador actualizado".encode("utf-8") in response.data
+    audit_events = _fetch_admin_audit_events(config.ids_db_path)
+    assert audit_events[-1].raw["action"] == "admin_email_set"
+    assert audit_events[-1].raw["user"] == "admin"
+    assert audit_events[-1].raw["result"] == "success"
+
+
+def test_dashboard_viewer_cannot_change_admin_email(tmp_path: Path) -> None:
+    config = _config(
+        tmp_path / "events.db",
+        dashboard_auth_enabled=True,
+        dashboard_username="viewer",
+        dashboard_password="viewer-password",
+        dashboard_role="viewer",
+    )
+    config.admin_email = "old@example.org"
+    app = create_app(config=config)
+    auth_header = {"Authorization": _basic_auth("viewer", "viewer-password")}
+
+    with patch("src.config.set_admin_email") as setter:
+        response = app.test_client().post(
+            "/admin/lists",
+            data={"action": "admin_email_set", "admin_email": "new@example.org"},
+            headers=auth_header,
+        )
+
+    assert response.status_code == 403
+    setter.assert_not_called()
+
+
 def _config(
     db_path: Path,
     *,
@@ -1194,6 +1405,10 @@ def _config(
         whitelist_file=root / "whitelist.csv",
         blacklist_file=root / "blacklist.txt",
         log_dir=root / "logs",
+        ips_backend="nftables",
+        ips_table="gleipnir",
+        ips_chain="gleipnir_filter",
+        ips_config_file=root / "ips_config.json",
         dashboard_auth_enabled=dashboard_auth_enabled,
         dashboard_users_file=users_file,
         dashboard_username=dashboard_username,

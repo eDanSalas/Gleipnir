@@ -217,6 +217,58 @@ class ThreatIntelTests(unittest.TestCase):
         self.assertEqual(kwargs["timeout"], 2.5)
         self.assertFalse(kwargs["check"])
 
+    def test_check_whois_extracts_provider_asn_and_abuse_contact(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            config = DummyConfig(log_dir=Path(temp_dir))
+            runner = Mock(
+                return_value=subprocess.CompletedProcess(
+                    args=["whois", "8.8.8.8"],
+                    returncode=0,
+                    stdout=(
+                        "OrgName: Example Hosting\n"
+                        "NetName: EXAMPLE-NET\n"
+                        "OriginAS: AS64500\n"
+                        "OrgAbuseEmail: abuse@example.net\n"
+                        "Comment: noc@example.net\n"
+                    ),
+                    stderr="",
+                )
+            )
+
+            result = check_whois(
+                "8.8.8.8",
+                config=config,
+                whois_runner=runner,
+            )
+
+        self.assertEqual(result.status, STATUS_OK)
+        self.assertEqual(result.data["organization"], "Example Hosting")
+        self.assertEqual(result.data["provider"], "EXAMPLE-NET")
+        self.assertEqual(result.data["asn"], "AS64500")
+        self.assertEqual(result.data["abuse_contact"], "abuse@example.net")
+        self.assertIn("abuse@example.net", result.data["emails"])
+
+    def test_check_whois_incomplete_response_is_reported(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            config = DummyConfig(log_dir=Path(temp_dir))
+            runner = Mock(
+                return_value=subprocess.CompletedProcess(
+                    args=["whois", "8.8.8.8"],
+                    returncode=0,
+                    stdout="",
+                    stderr="",
+                )
+            )
+
+            result = check_whois(
+                "8.8.8.8",
+                config=config,
+                whois_runner=runner,
+            )
+
+        self.assertEqual(result.status, STATUS_ERROR)
+        self.assertIn("Incomplete Whois response", result.error)
+
     def test_check_whois_rate_limit_is_reported(self) -> None:
         with TemporaryDirectory() as temp_dir:
             config = DummyConfig(log_dir=Path(temp_dir))

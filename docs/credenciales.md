@@ -35,6 +35,7 @@ Variables operativas no secretas:
 - `SMTP_USER`
 - `ADMIN_EMAIL`
 - `WHITELIST_FILE`
+- `WHITELIST_AUTH_POLICY`
 - `BLACKLIST_FILE`
 - `LOG_DIR`
 - `REPORT_DIR`

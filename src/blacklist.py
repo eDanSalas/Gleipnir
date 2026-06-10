@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import ipaddress
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
 
 DEFAULT_BLACKLIST_FILE = Path("data/blacklist.txt")
+DEFAULT_RISK = "Unknown"
+SUPPORTED_RISKS = ("Virus", "Malware", "Botnet", "Phishing", DEFAULT_RISK)
+_RISK_PREFIX_PATTERN = re.compile(r"^(reason|risk|riesgo|motivo)\s*:\s*", re.IGNORECASE)
 
 _BLACKLISTED_IPS: set[str] = set()
 _BLACKLISTED_ENTRIES: dict[str, "BlacklistEntry"] = {}
@@ -20,10 +24,10 @@ class BlacklistError(ValueError):
 
 @dataclass(frozen=True)
 class BlacklistEntry:
-    """Single blacklisted IP with optional administrative reason."""
+    """Single blacklisted IP with a normalized risk label."""
 
     ip: str
-    reason: str = ""
+    reason: str = DEFAULT_RISK
 
 
 def load_blacklist(file_path: str | Path = DEFAULT_BLACKLIST_FILE) -> tuple[str, ...]:
@@ -50,12 +54,7 @@ def list_blacklist_entries(file_path: str | Path = DEFAULT_BLACKLIST_FILE) -> tu
                 pending_reason = _comment_to_reason(line)
                 continue
 
-            entries.append(
-                BlacklistEntry(
-                    ip=_validate_blacklist_ip(line, line_number),
-                    reason=pending_reason,
-                )
-            )
+            entries.append(_entry_from_line(line, line_number, pending_reason))
             pending_reason = ""
 
     return tuple(entries)
@@ -76,13 +75,11 @@ def add_blacklist_entry(
     if normalized_ip in existing_ips:
         raise BlacklistError(f"Blacklist already contains IP address: {normalized_ip}")
 
-    entry = BlacklistEntry(ip=normalized_ip, reason=reason.strip())
+    entry = BlacklistEntry(ip=normalized_ip, reason=normalize_risk(reason))
     with path.open("a", encoding="utf-8") as blacklist_file:
         if path.stat().st_size > 0:
             blacklist_file.write("\n")
-        if entry.reason:
-            blacklist_file.write(f"# reason: {entry.reason}\n")
-        blacklist_file.write(f"{entry.ip}\n")
+        blacklist_file.write(f"{entry.ip},{entry.reason}\n")
 
     _replace_blacklisted_entries((*list_blacklist_entries(path),))
     return entry
@@ -138,6 +135,47 @@ def validate_ip(value: str) -> str:
         raise BlacklistError(f"Invalid IP address: {value}") from exc
 
 
+def normalize_risk(value: str | None) -> str:
+    """Return one supported risk label from free-text blacklist metadata."""
+    if value is None:
+        return DEFAULT_RISK
+
+    cleaned = _RISK_PREFIX_PATTERN.sub("", value.strip())
+    if not cleaned:
+        return DEFAULT_RISK
+
+    lowered = cleaned.lower()
+    for risk in SUPPORTED_RISKS:
+        if lowered == risk.lower():
+            return risk
+
+    for risk in SUPPORTED_RISKS:
+        if risk == DEFAULT_RISK:
+            continue
+        if re.search(rf"\b{re.escape(risk.lower())}\b", lowered):
+            return risk
+
+    return DEFAULT_RISK
+
+
+def _entry_from_line(
+    line: str,
+    line_number: int,
+    pending_reason: str,
+) -> BlacklistEntry:
+    if "," in line:
+        raw_ip, raw_reason = line.split(",", maxsplit=1)
+        return BlacklistEntry(
+            ip=_validate_blacklist_ip(raw_ip.strip(), line_number),
+            reason=normalize_risk(raw_reason),
+        )
+
+    return BlacklistEntry(
+        ip=_validate_blacklist_ip(line, line_number),
+        reason=normalize_risk(pending_reason),
+    )
+
+
 def _validate_blacklist_ip(value: str, line_number: int) -> str:
     try:
         return validate_ip(value)
@@ -160,15 +198,10 @@ def _replace_blacklisted_entries(entries: Iterable[BlacklistEntry]) -> None:
 
 def _comment_to_reason(line: str) -> str:
     comment = line.lstrip("#").strip()
-    if comment.lower().startswith("reason:"):
-        return comment.split(":", 1)[1].strip()
-
-    return comment
+    return normalize_risk(comment)
 
 
 def _write_blacklist_entries(path: Path, entries: Iterable[BlacklistEntry]) -> None:
     with path.open("w", encoding="utf-8") as blacklist_file:
         for entry in entries:
-            if entry.reason:
-                blacklist_file.write(f"# reason: {entry.reason}\n")
-            blacklist_file.write(f"{entry.ip}\n")
+            blacklist_file.write(f"{entry.ip},{normalize_risk(entry.reason)}\n")

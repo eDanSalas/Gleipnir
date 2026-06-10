@@ -64,6 +64,7 @@ class ReportData:
     blacklisted_external_ips: Sequence[Any] = field(default_factory=tuple)
     threat_intel_results: Sequence[Any] = field(default_factory=tuple)
     alert_events: Sequence[Any] = field(default_factory=tuple)
+    ips_events: Sequence[Any] = field(default_factory=tuple)
 
 
 @dataclass(frozen=True)
@@ -176,6 +177,7 @@ def build_report_payload(
             _redact(_to_plain_dict(item)) for item in report_data.threat_intel_results
         ],
         "alert_events": [_redact(_to_plain_dict(item)) for item in report_data.alert_events],
+        "ips_events": [_redact(_to_plain_dict(item)) for item in report_data.ips_events],
     }
     payload["summary"] = {
         "authorized_devices": len(payload["authorized_devices"]),
@@ -185,6 +187,7 @@ def build_report_payload(
         "blacklisted_external_ips": len(payload["blacklisted_external_ips"]),
         "threat_intel_results": len(payload["threat_intel_results"]),
         "alert_events": len(payload["alert_events"]),
+        "ips_events": len(payload["ips_events"]),
     }
     payload["filters"] = _filters_to_plain_dict(filters)
     return payload
@@ -200,6 +203,7 @@ def summarize_report_data(report_data: ReportData) -> dict[str, int]:
         "blacklisted_external_ips": len(report_data.blacklisted_external_ips),
         "threat_intel_results": len(report_data.threat_intel_results),
         "alert_events": len(report_data.alert_events),
+        "ips_events": len(report_data.ips_events),
     }
 
 
@@ -220,6 +224,7 @@ def _payload_to_rows(payload: Mapping[str, Any]) -> Iterable[dict[str, Any]]:
         ("blacklisted_external_ip", payload["blacklisted_external_ips"]),
         ("threat_intel", payload["threat_intel_results"]),
         ("alert_event", payload["alert_events"]),
+        ("ips_event", payload.get("ips_events", [])),
     )
 
     for category, items in categories:

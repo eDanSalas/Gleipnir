@@ -88,9 +88,18 @@ automaticamente.
 - `/events`: resumen y ultimos eventos en JSON.
 - `/events/<event_id>`: detalle HTML de un evento individual.
 - `/admin/lists`: administracion opcional de whitelist y blacklist.
+- `/admin/ips`: administracion opcional de la capa IPS/Firewall (solo rol admin).
 
-Con autenticacion activa, todas estas rutas solicitan credenciales. La ruta
-`/admin/lists` solo esta disponible cuando `DASHBOARD_AUTH_ENABLED=true`.
+Con autenticacion activa, todas estas rutas solicitan credenciales. Las rutas
+`/admin/lists` y `/admin/ips` solo estan disponibles cuando
+`DASHBOARD_AUTH_ENABLED=true` y requieren rol admin.
+
+La pagina `/admin/ips` permite ver el estado del IPS, cambiar la configuracion
+operativa (guardada en `data/ips_config.json`, con CSRF y auditoria
+`ADMIN_IPS_*`), ejecutar dry-run y, solo si `auto_apply=true` y el proceso tiene
+permisos root, aplicar/remover reglas. El dashboard **no** edita `.env` ni pide o
+almacena contrasenas sudo; para aplicar reglas reales se recomienda
+`sudo .venv/bin/gleipnir ips apply` desde terminal. Ver `docs/ips_firewall.md`.
 
 ## 6. Autenticacion del dashboard
 

@@ -12,6 +12,15 @@ from typing import Iterable
 
 DEFAULT_WHITELIST_FILE = Path("data/whitelist.csv")
 REQUIRED_COLUMNS = ("ip", "mac", "description")
+AUTH_POLICY_STRICT = "strict"
+AUTH_POLICY_IP_FALLBACK = "ip_fallback"
+AUTH_POLICIES = (AUTH_POLICY_STRICT, AUTH_POLICY_IP_FALLBACK)
+AUTHORIZED_BY_IP_MAC = "ip_mac"
+AUTHORIZED_BY_IP_FALLBACK = "ip_fallback"
+REASON_IP_NOT_IN_WHITELIST = "ip_not_in_whitelist"
+REASON_MAC_NOT_IN_WHITELIST = "mac_not_in_whitelist"
+REASON_IP_MAC_PAIR_MISMATCH = "ip_mac_pair_mismatch"
+REASON_MAC_MISSING_STRICT_POLICY = "mac_missing_strict_policy"
 MAC_PATTERN = re.compile(
     r"^(?P<a>[0-9a-fA-F]{2})[:-](?P<b>[0-9a-fA-F]{2})[:-]"
     r"(?P<c>[0-9a-fA-F]{2})[:-](?P<d>[0-9a-fA-F]{2})[:-]"
@@ -19,6 +28,8 @@ MAC_PATTERN = re.compile(
 )
 
 _AUTHORIZED_PAIRS: set[tuple[str, str]] = set()
+_AUTHORIZED_IPS: set[str] = set()
+_AUTHORIZED_MACS: set[str] = set()
 
 
 class WhitelistError(ValueError):
@@ -34,6 +45,15 @@ class WhitelistEntry:
     description: str
 
 
+@dataclass(frozen=True)
+class AuthorizationResult:
+    """Decision produced by the whitelist authorization policy."""
+
+    authorized: bool
+    authorized_by: str | None = None
+    reason: str | None = None
+
+
 def load_whitelist(file_path: str | Path = DEFAULT_WHITELIST_FILE) -> tuple[WhitelistEntry, ...]:
     """Load authorized IP/MAC pairs from a CSV whitelist file."""
     path = Path(file_path)
@@ -46,7 +66,8 @@ def load_whitelist(file_path: str | Path = DEFAULT_WHITELIST_FILE) -> tuple[Whit
         for line_number, row in enumerate(reader, start=2):
             entries.append(_entry_from_row(row, line_number))
 
-    _replace_authorized_pairs(entries)
+    _validate_unique_entries(entries)
+    _replace_authorized_entries(entries)
     return tuple(entries)
 
 
@@ -67,12 +88,11 @@ def add_whitelist_entry(
         description=description.strip(),
     )
 
-    if any(entry.ip == new_entry.ip for entry in entries):
-        raise WhitelistError(f"Whitelist already contains IP address: {new_entry.ip}")
+    _validate_new_entry_is_unique(entries, new_entry)
 
     entries.append(new_entry)
     _write_whitelist(path, entries)
-    _replace_authorized_pairs(entries)
+    _replace_authorized_entries(entries)
     return new_entry
 
 
@@ -94,32 +114,86 @@ def remove_whitelist_entry(file_path: str | Path, *, ip: str) -> WhitelistEntry:
         raise WhitelistError(f"Whitelist does not contain IP address: {normalized_ip}")
 
     _write_whitelist(path, remaining)
-    _replace_authorized_pairs(remaining)
+    _replace_authorized_entries(remaining)
     return removed
 
 
 def validate_whitelist_file(file_path: str | Path) -> tuple[WhitelistEntry, ...]:
-    """Validate a whitelist file and reject duplicate IP addresses."""
-    entries = load_whitelist(file_path)
-    seen_ips: set[str] = set()
-
-    for entry in entries:
-        if entry.ip in seen_ips:
-            raise WhitelistError(f"Duplicate whitelist IP address: {entry.ip}")
-        seen_ips.add(entry.ip)
-
-    return entries
+    """Validate a whitelist file and reject duplicate IP or MAC identities."""
+    return load_whitelist(file_path)
 
 
-def is_authorized(ip: str, mac: str | None) -> bool:
-    """Return whether the IP/MAC pair exists in the loaded whitelist."""
-    if mac is None:
-        return False
-
+def check_authorization(
+    ip: str,
+    mac: str | None,
+    *,
+    policy: str = AUTH_POLICY_STRICT,
+) -> AuthorizationResult:
+    """Return an explicit authorization decision for one source IP/MAC identity."""
+    normalized_policy = normalize_auth_policy(policy)
     normalized_ip = validate_ip(ip)
-    normalized_mac = validate_mac(mac)
+    normalized_mac = validate_mac(mac) if mac is not None else None
 
-    return (normalized_ip, normalized_mac) in _AUTHORIZED_PAIRS
+    if normalized_mac is None:
+        if normalized_policy == AUTH_POLICY_IP_FALLBACK:
+            if normalized_ip in _AUTHORIZED_IPS:
+                return AuthorizationResult(
+                    authorized=True,
+                    authorized_by=AUTHORIZED_BY_IP_FALLBACK,
+                )
+            return AuthorizationResult(
+                authorized=False,
+                reason=REASON_IP_NOT_IN_WHITELIST,
+            )
+
+        return AuthorizationResult(
+            authorized=False,
+            reason=REASON_MAC_MISSING_STRICT_POLICY,
+        )
+
+    if (normalized_ip, normalized_mac) in _AUTHORIZED_PAIRS:
+        return AuthorizationResult(
+            authorized=True,
+            authorized_by=AUTHORIZED_BY_IP_MAC,
+        )
+
+    ip_known = normalized_ip in _AUTHORIZED_IPS
+    mac_known = normalized_mac in _AUTHORIZED_MACS
+    if ip_known and mac_known:
+        return AuthorizationResult(
+            authorized=False,
+            reason=REASON_IP_MAC_PAIR_MISMATCH,
+        )
+    if ip_known:
+        return AuthorizationResult(
+            authorized=False,
+            reason=REASON_MAC_NOT_IN_WHITELIST,
+        )
+
+    return AuthorizationResult(
+        authorized=False,
+        reason=REASON_IP_NOT_IN_WHITELIST,
+    )
+
+
+def is_authorized(
+    ip: str,
+    mac: str | None,
+    *,
+    policy: str = AUTH_POLICY_STRICT,
+) -> bool:
+    """Return whether the IP/MAC pair exists in the loaded whitelist."""
+    return check_authorization(ip, mac, policy=policy).authorized
+
+
+def normalize_auth_policy(value: str | None) -> str:
+    """Validate and normalize whitelist authorization policy names."""
+    normalized = (value or AUTH_POLICY_STRICT).strip().lower()
+    if normalized not in AUTH_POLICIES:
+        allowed = ", ".join(AUTH_POLICIES)
+        raise WhitelistError(f"WHITELIST_AUTH_POLICY must be one of: {allowed}")
+
+    return normalized
 
 
 def validate_ip(value: str) -> str:
@@ -173,10 +247,57 @@ def _required_cell(row: dict[str, str | None], field_name: str, line_number: int
     return value.strip()
 
 
-def _replace_authorized_pairs(entries: Iterable[WhitelistEntry]) -> None:
-    global _AUTHORIZED_PAIRS
+def _validate_new_entry_is_unique(
+    entries: Iterable[WhitelistEntry],
+    new_entry: WhitelistEntry,
+) -> None:
+    for entry in entries:
+        if entry.ip == new_entry.ip:
+            raise WhitelistError(
+                f"Whitelist already contains IP address: {new_entry.ip}"
+            )
+        if entry.mac == new_entry.mac:
+            raise WhitelistError(
+                f"Whitelist already contains MAC address: {new_entry.mac}"
+            )
 
-    _AUTHORIZED_PAIRS = {(entry.ip, entry.mac) for entry in entries}
+
+def _validate_unique_entries(entries: Iterable[WhitelistEntry]) -> None:
+    seen_ips: dict[str, str] = {}
+    seen_macs: dict[str, str] = {}
+
+    for entry in entries:
+        existing_mac = seen_ips.get(entry.ip)
+        if existing_mac is not None:
+            if existing_mac != entry.mac:
+                raise WhitelistError(
+                    "Duplicate whitelist IP address with different MAC: "
+                    f"{entry.ip} maps to both {existing_mac} and {entry.mac}"
+                )
+            raise WhitelistError(f"Duplicate whitelist IP address: {entry.ip}")
+
+        existing_ip = seen_macs.get(entry.mac)
+        if existing_ip is not None:
+            if existing_ip != entry.ip:
+                raise WhitelistError(
+                    "Duplicate whitelist MAC address with different IP: "
+                    f"{entry.mac} maps to both {existing_ip} and {entry.ip}"
+                )
+            raise WhitelistError(f"Duplicate whitelist MAC address: {entry.mac}")
+
+        seen_ips[entry.ip] = entry.mac
+        seen_macs[entry.mac] = entry.ip
+
+
+def _replace_authorized_entries(entries: Iterable[WhitelistEntry]) -> None:
+    global _AUTHORIZED_PAIRS
+    global _AUTHORIZED_IPS
+    global _AUTHORIZED_MACS
+
+    entry_tuple = tuple(entries)
+    _AUTHORIZED_PAIRS = {(entry.ip, entry.mac) for entry in entry_tuple}
+    _AUTHORIZED_IPS = {entry.ip for entry in entry_tuple}
+    _AUTHORIZED_MACS = {entry.mac for entry in entry_tuple}
 
 
 def _read_whitelist_if_exists(path: Path) -> tuple[WhitelistEntry, ...]:

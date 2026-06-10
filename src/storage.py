@@ -9,7 +9,10 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping
 
 from src.detector import AUTHORIZED_DEVICE, BLACKLISTED_EXTERNAL_IP, UNAUTHORIZED_DEVICE
+from src.firewall import IPS_BLOCKED_BLACKLISTED_IP, IPS_BLOCKED_UNREGISTERED_DEVICE
 from src.reports import ReportData, ReportFilters
+
+IPS_EVENT_TYPES = (IPS_BLOCKED_BLACKLISTED_IP, IPS_BLOCKED_UNREGISTERED_DEVICE)
 
 
 DNS_EVENT = "DNS_EVENT"
@@ -25,6 +28,17 @@ ADMIN_LOGIN_SUCCESS = "ADMIN_LOGIN_SUCCESS"
 ADMIN_LOGIN_FAILED = "ADMIN_LOGIN_FAILED"
 LOGIN_LOCKED = "LOGIN_LOCKED"
 ADMIN_LOGOUT = "ADMIN_LOGOUT"
+ADMIN_IPS_CONFIG_CHANGED = "ADMIN_IPS_CONFIG_CHANGED"
+ADMIN_IPS_ENABLED = "ADMIN_IPS_ENABLED"
+ADMIN_IPS_DISABLED = "ADMIN_IPS_DISABLED"
+ADMIN_IPS_DRY_RUN_ENABLED = "ADMIN_IPS_DRY_RUN_ENABLED"
+ADMIN_IPS_DRY_RUN_DISABLED = "ADMIN_IPS_DRY_RUN_DISABLED"
+ADMIN_IPS_POLICY_CHANGED = "ADMIN_IPS_POLICY_CHANGED"
+ADMIN_IPS_APPLY_REQUESTED = "ADMIN_IPS_APPLY_REQUESTED"
+ADMIN_IPS_REMOVE_REQUESTED = "ADMIN_IPS_REMOVE_REQUESTED"
+ADMIN_IPS_APPLY_FAILED = "ADMIN_IPS_APPLY_FAILED"
+ADMIN_IPS_APPLY_SUCCESS = "ADMIN_IPS_APPLY_SUCCESS"
+ADMIN_IPS_REMOVE_SUCCESS = "ADMIN_IPS_REMOVE_SUCCESS"
 
 SEVERITY_INFO = "INFO"
 SEVERITY_LOW = "BAJA"
@@ -202,7 +216,40 @@ class SQLiteEventStore:
         for threat_result in _iter_threat_intel_results(threat_intel_results):
             stored_ids.append(self.save_threat_intel_result(threat_result))
 
+        for ips_event in getattr(result, "ips_events", ()) or ():
+            stored_ids.append(self.save_ips_event(ips_event))
+
         return tuple(stored_ids)
+
+    def save_ips_event(self, event: Any) -> int:
+        """Persist one IPS/firewall action event."""
+        accion = getattr(event, "accion", None)
+        applied = getattr(event, "applied", False)
+        dry_run = getattr(event, "dry_run", False)
+        message = (
+            getattr(event, "message", None)
+            or f"IPS {getattr(event, 'event_type', 'action')} accion={accion}"
+        )
+        return self.save_event(
+            event_type=getattr(event, "event_type"),
+            timestamp=getattr(event, "timestamp", None),
+            severity=getattr(event, "severidad", None),
+            source_ip=getattr(event, "ip_origen", None),
+            destination_ip=getattr(event, "ip_destino", None),
+            protocol=getattr(event, "protocolo", None),
+            message=message,
+            raw={
+                "event_type": getattr(event, "event_type", None),
+                "direccion": getattr(event, "direccion", None),
+                "motivo": getattr(event, "motivo", None),
+                "severidad": getattr(event, "severidad", None),
+                "accion": accion,
+                "applied": applied,
+                "dry_run": dry_run,
+                "backend": getattr(event, "backend", None),
+                "message": message,
+            },
+        )
 
     def save_detection_event(self, event: Any) -> int:
         """Persist an AUTHORIZED_DEVICE or UNAUTHORIZED_DEVICE event."""
@@ -396,6 +443,7 @@ class SQLiteEventStore:
         blacklisted_external_ips: list[dict[str, Any]] = []
         threat_intel_results: list[dict[str, Any]] = []
         alert_events: list[dict[str, Any]] = []
+        ips_events: list[dict[str, Any]] = []
 
         query_filters = _merge_report_filters(filters, filter_kwargs)
         for event in self.fetch_events(**query_filters):
@@ -414,6 +462,8 @@ class SQLiteEventStore:
                 threat_intel_results.append(item)
             elif event.event_type in (ALERT_SENT, ALERT_SUPPRESSED):
                 alert_events.append(item)
+            elif event.event_type in IPS_EVENT_TYPES:
+                ips_events.append(item)
 
         return ReportData(
             authorized_devices=tuple(authorized_devices),
@@ -423,6 +473,7 @@ class SQLiteEventStore:
             blacklisted_external_ips=tuple(blacklisted_external_ips),
             threat_intel_results=tuple(threat_intel_results),
             alert_events=tuple(alert_events),
+            ips_events=tuple(ips_events),
         )
 
     def close(self) -> None:

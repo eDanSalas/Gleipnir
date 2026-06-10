@@ -16,8 +16,19 @@ from src.sniffer import PacketEvent
 
 AUTHORIZED_DEVICE = "AUTHORIZED_DEVICE"
 UNAUTHORIZED_DEVICE = "UNAUTHORIZED_DEVICE"
+# Family/base event type kept for storage, reports, and dashboard compatibility.
 BLACKLISTED_EXTERNAL_IP = "BLACKLISTED_EXTERNAL_IP"
+# Directional/private classifications carried on the event for honest evidence.
+BLACKLISTED_EXTERNAL_IP_OUTBOUND = "BLACKLISTED_EXTERNAL_IP_OUTBOUND"
+BLACKLISTED_EXTERNAL_IP_INBOUND = "BLACKLISTED_EXTERNAL_IP_INBOUND"
+BLACKLISTED_PRIVATE_IP = "BLACKLISTED_PRIVATE_IP"
 BLACKLISTED_EXTERNAL_IP_SEVERITY = "ALTA"
+DIRECTION_OUTBOUND = "outbound"
+DIRECTION_INBOUND = "inbound"
+DIRECTION_LOCAL = "local"
+DIRECTION_UNKNOWN = "unknown"
+ACTION_DETECTED = "detected"
+ACTION_ALERTED = "alerted"
 _LOGGER = get_logger("detector")
 _LOGGER.addHandler(logging.NullHandler())
 
@@ -37,6 +48,8 @@ class DetectionEvent:
     alert_suppressed: bool = False
     alert_suppression_reason: str | None = None
     alert_severity: str = SEVERITY_MEDIUM
+    authorized_by: str | None = None
+    unauthorized_reason: str | None = None
 
 
 @dataclass(frozen=True)
@@ -55,6 +68,10 @@ class BlacklistedExternalIPEvent:
     alert_suppressed: bool = False
     alert_suppression_reason: str | None = None
     alert_severity: str = SEVERITY_HIGH
+    direccion: str = DIRECTION_OUTBOUND
+    directional_event_type: str = BLACKLISTED_EXTERNAL_IP_OUTBOUND
+    ip_peligrosa: str = ""
+    accion: str = ACTION_DETECTED
 
 
 @dataclass(frozen=True)
@@ -73,12 +90,16 @@ class DeviceDetector:
         *,
         alert_recipient: str | None = None,
         send_email: bool = True,
-        authorization_checker: Callable[[str, str | None], bool] = whitelist.is_authorized,
+        authorization_checker: Callable[[str, str | None], Any] | None = None,
+        authorization_policy: str = whitelist.AUTH_POLICY_STRICT,
         alert_sender: Callable[[str, str, str], None] = mailer.send_alert,
     ) -> None:
         self._alert_recipient = alert_recipient
         self._send_email = send_email
         self._authorization_checker = authorization_checker
+        self._authorization_policy = whitelist.normalize_auth_policy(
+            authorization_policy
+        )
         self._alert_sender = alert_sender
         self._logger = _LOGGER
 
@@ -93,11 +114,19 @@ class DeviceDetector:
                 getattr(packet, "link_layer_type", "unknown"),
             )
 
-        if self._authorization_checker(packet.ip_origen, packet.mac_origen):
+        authorization = self._check_authorization(packet)
+        if authorization.authorized:
+            if authorization.authorized_by == whitelist.AUTHORIZED_BY_IP_FALLBACK:
+                self._logger.info(
+                    "Whitelist IP fallback authorization used: ip=%s link_layer=%s",
+                    packet.ip_origen,
+                    getattr(packet, "link_layer_type", "unknown"),
+                )
             message = (
                 "Authorized device observed: "
                 f"ip={packet.ip_origen} mac={source_mac} "
-                f"dst={packet.ip_destino} protocol={packet.protocolo}"
+                f"dst={packet.ip_destino} protocol={packet.protocolo} "
+                f"authorized_by={authorization.authorized_by}"
             )
             self._logger.info("%s | %s", AUTHORIZED_DEVICE, message)
             return DetectionEvent(
@@ -105,16 +134,22 @@ class DeviceDetector:
                 packet=packet,
                 alert_sent=False,
                 message=message,
+                authorized_by=authorization.authorized_by,
             )
 
         message = (
             "Unauthorized device detected: "
             f"ip={packet.ip_origen} mac={source_mac} "
             f"dst={packet.ip_destino} dst_mac={destination_mac} "
-            f"protocol={packet.protocolo} timestamp={packet.timestamp}"
+            f"protocol={packet.protocolo} timestamp={packet.timestamp} "
+            f"reason={authorization.reason}"
         )
         self._logger.warning("%s | %s", UNAUTHORIZED_DEVICE, message)
-        alert_outcome = self._send_unauthorized_alert(packet, message)
+        alert_outcome = self._send_unauthorized_alert(
+            packet,
+            message,
+            authorization.reason,
+        )
 
         return DetectionEvent(
             event_type=UNAUTHORIZED_DEVICE,
@@ -124,12 +159,40 @@ class DeviceDetector:
             alert_suppressed=alert_outcome.suppressed,
             alert_suppression_reason=alert_outcome.reason,
             alert_severity=alert_outcome.severity,
+            unauthorized_reason=authorization.reason,
+        )
+
+    def _check_authorization(
+        self,
+        packet: PacketEvent,
+    ) -> whitelist.AuthorizationResult:
+        if self._authorization_checker is None:
+            return whitelist.check_authorization(
+                packet.ip_origen,
+                packet.mac_origen,
+                policy=self._authorization_policy,
+            )
+
+        result = self._authorization_checker(packet.ip_origen, packet.mac_origen)
+        if isinstance(result, whitelist.AuthorizationResult):
+            return result
+
+        if result:
+            return whitelist.AuthorizationResult(
+                authorized=True,
+                authorized_by=whitelist.AUTHORIZED_BY_IP_MAC,
+            )
+
+        return whitelist.AuthorizationResult(
+            authorized=False,
+            reason=whitelist.REASON_IP_MAC_PAIR_MISMATCH,
         )
 
     def _send_unauthorized_alert(
         self,
         packet: PacketEvent,
         message: str,
+        unauthorized_reason: str | None,
     ) -> _AlertOutcome:
         if not self._send_email:
             return _AlertOutcome(False, False, None, SEVERITY_MEDIUM)
@@ -151,6 +214,7 @@ class DeviceDetector:
             f"- MAC destino: {_format_optional_mac(packet.mac_destino)}\n"
             f"- Protocolo: {packet.protocolo}\n"
             f"- Timestamp: {packet.timestamp}\n"
+            f"- Motivo: {unauthorized_reason or 'unknown'}\n"
         )
 
         try:
@@ -189,44 +253,74 @@ class ExternalIPBlacklistDetector:
             blacklist.get_blacklist_entry
         ),
         alert_sender: Callable[[str, str, str], None] = mailer.send_alert,
+        check_private: bool = False,
     ) -> None:
         self._alert_recipient = alert_recipient
         self._send_email = send_email
         self._blacklist_checker = blacklist_checker
         self._blacklist_lookup = blacklist_lookup
         self._alert_sender = alert_sender
+        self._check_private = check_private
         self._logger = _LOGGER
 
     def analyze(self, packet: PacketEvent) -> BlacklistedExternalIPEvent | None:
-        """Return a blacklist event when the destination is dangerous."""
-        if not _is_external_ip(packet.ip_destino):
-            self._logger.info(
-                "%s | private/non-external destination ignored: dst=%s",
-                BLACKLISTED_EXTERNAL_IP,
-                packet.ip_destino,
-            )
-            return None
+        """Return a blacklist event when source or destination is dangerous.
 
-        if not self._blacklist_checker(packet.ip_destino):
-            self._logger.info(
-                "%s | destination not blacklisted: src=%s dst=%s protocol=%s",
-                BLACKLISTED_EXTERNAL_IP,
-                packet.ip_origen,
-                packet.ip_destino,
-                packet.protocolo,
-            )
-            return None
+        Destination (outbound) is evaluated first, then source (inbound).
+        Private/local IPs are only checked when ``check_private`` is enabled.
+        """
+        for candidate_ip, role in (
+            (packet.ip_destino, "destination"),
+            (packet.ip_origen, "source"),
+        ):
+            if not self._should_check_ip(candidate_ip):
+                continue
+            if not self._blacklist_checker(candidate_ip):
+                self._logger.info(
+                    "%s | not blacklisted: role=%s ip=%s",
+                    BLACKLISTED_EXTERNAL_IP,
+                    role,
+                    candidate_ip,
+                )
+                continue
 
-        motivo = self._blacklist_reason(packet.ip_destino)
+            return self._build_event(packet, candidate_ip, role)
+
+        return None
+
+    def _should_check_ip(self, ip_address: str) -> bool:
+        if _is_external_ip(ip_address):
+            return True
+        if self._check_private:
+            return True
+
+        self._logger.info(
+            "%s | private/non-external ip ignored (BLACKLIST_CHECK_PRIVATE=false): ip=%s",
+            BLACKLISTED_EXTERNAL_IP,
+            ip_address,
+        )
+        return False
+
+    def _build_event(
+        self,
+        packet: PacketEvent,
+        dangerous_ip: str,
+        role: str,
+    ) -> BlacklistedExternalIPEvent:
+        direccion, directional_type = _classify_direction(dangerous_ip, role)
+        motivo = self._blacklist_reason(dangerous_ip)
         severidad = BLACKLISTED_EXTERNAL_IP_SEVERITY
         message = (
-            f"{BLACKLISTED_EXTERNAL_IP} | "
+            f"{directional_type} | "
             f"timestamp={packet.timestamp} "
             f"src={packet.ip_origen} dst={packet.ip_destino} "
+            f"dangerous={dangerous_ip} direction={direccion} "
             f"protocol={packet.protocolo} severity={severidad} reason={motivo}"
         )
         self._logger.warning(message)
-        alert_outcome = self._send_blacklist_alert(packet, motivo, severidad)
+        alert_outcome = self._send_blacklist_alert(
+            packet, motivo, severidad, direccion, dangerous_ip
+        )
 
         return BlacklistedExternalIPEvent(
             event_type=BLACKLISTED_EXTERNAL_IP,
@@ -240,20 +334,26 @@ class ExternalIPBlacklistDetector:
             alert_suppressed=alert_outcome.suppressed,
             alert_suppression_reason=alert_outcome.reason,
             alert_severity=alert_outcome.severity,
+            direccion=direccion,
+            directional_event_type=directional_type,
+            ip_peligrosa=dangerous_ip,
+            accion=ACTION_ALERTED if alert_outcome.sent else ACTION_DETECTED,
         )
 
     def _blacklist_reason(self, ip_destino: str) -> str:
         entry = self._blacklist_lookup(ip_destino)
-        if entry is not None and entry.reason:
-            return entry.reason
+        if entry is not None:
+            return blacklist.normalize_risk(entry.reason)
 
-        return "Destination external IP appears in the configured blacklist"
+        return blacklist.DEFAULT_RISK
 
     def _send_blacklist_alert(
         self,
         packet: PacketEvent,
         motivo: str,
         severidad: str,
+        direccion: str,
+        dangerous_ip: str,
     ) -> _AlertOutcome:
         if not self._send_email:
             return _AlertOutcome(False, False, None, SEVERITY_HIGH)
@@ -265,16 +365,24 @@ class ExternalIPBlacklistDetector:
             )
             return _AlertOutcome(False, False, None, SEVERITY_HIGH)
 
-        subject = f"Gleipnir IDS: {BLACKLISTED_EXTERNAL_IP}"
+        subject = (
+            "Gleipnir IDS: ALERTA DE EMERGENCIA - IP peligrosa detectada - "
+            f"{BLACKLISTED_EXTERNAL_IP}"
+        )
         body = (
-            "Se detecto trafico hacia una IP externa en blacklist.\n\n"
+            "ALERTA DE EMERGENCIA: se detecto trafico relacionado con una IP "
+            "en blacklist.\n\n"
             "Resumen:\n"
             f"- Timestamp: {packet.timestamp}\n"
+            f"- Direccion del flujo: {direccion}\n"
             f"- IP origen: {packet.ip_origen}\n"
             f"- IP destino: {packet.ip_destino}\n"
+            f"- IP peligrosa: {dangerous_ip}\n"
             f"- Protocolo: {packet.protocolo}\n"
-            f"- Motivo: {motivo}\n"
+            f"- Tipo de riesgo: {motivo}\n"
             f"- Severidad: {severidad}\n"
+            "\nRecomendacion: revisar el equipo involucrado, validar si la "
+            "conexion fue autorizada y consultar el reporte forense del IDS.\n"
         )
 
         try:
@@ -323,13 +431,24 @@ def detect_blacklisted_external_ip(
     *,
     alert_recipient: str | None = None,
     send_email: bool = True,
+    check_private: bool = False,
 ) -> BlacklistedExternalIPEvent | None:
     """Analyze one PacketEvent against the configured external IP blacklist."""
     detector = ExternalIPBlacklistDetector(
         alert_recipient=alert_recipient,
         send_email=send_email,
+        check_private=check_private,
     )
     return detector.analyze(packet)
+
+
+def _classify_direction(dangerous_ip: str, role: str) -> tuple[str, str]:
+    """Return (direccion, directional_event_type) for a matched blacklist IP."""
+    if not _is_external_ip(dangerous_ip):
+        return DIRECTION_LOCAL, BLACKLISTED_PRIVATE_IP
+    if role == "source":
+        return DIRECTION_INBOUND, BLACKLISTED_EXTERNAL_IP_INBOUND
+    return DIRECTION_OUTBOUND, BLACKLISTED_EXTERNAL_IP_OUTBOUND
 
 
 def _is_external_ip(ip_address: str) -> bool:

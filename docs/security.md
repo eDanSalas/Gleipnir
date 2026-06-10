@@ -251,6 +251,19 @@ se registran mediante `logger.py`.
 - No hay OAuth ni integracion con directorio corporativo.
 - Flask no implementa TLS dentro del proyecto; usar reverse proxy.
 - El sistema es educativo/defensivo y requiere autorizacion institucional.
+- La capa IPS/Firewall (`docs/ips_firewall.md`) es OPCIONAL y esta desactivada
+  por defecto. Su configuracion operativa vive en `data/ips_config.json`
+  (`ips_enabled=false`, `dry_run=true`, `auto_apply=false` por defecto); `.env`
+  solo guarda valores base. Solo modifica trafico con `ips_enabled=true` y
+  `dry_run=false`, requiere `nft` y privilegios root, y unicamente gestiona su
+  propia tabla `inet gleipnir` (nunca hace flush global). Usa `gleipnir ips
+  dry-run` antes de aplicar y nunca la apliques en redes ajenas.
+- La administracion del IPS desde el dashboard (`/admin/ips`) requiere rol admin,
+  autenticacion y CSRF, registra auditoria `ADMIN_IPS_*`, **no** edita `.env` y
+  **no** pide ni almacena contrasenas sudo. Aplicar reglas reales desde el
+  dashboard solo se intenta si `auto_apply=true` y el proceso tiene permisos root;
+  de lo contrario se indica usar la CLI con sudo. Se recomienda aplicar reglas
+  reales desde terminal con `sudo .venv/bin/gleipnir ips apply`.
 
 ## 8. Checklist de despliegue seguro
 

@@ -15,7 +15,8 @@ from datetime import datetime, time, timedelta, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
-from src import blacklist, whitelist
+from src import blacklist, firewall, ips_config, whitelist
+from src.config import ConfigError
 from src.dashboard.auth import (
     DashboardAuthError,
     LoginAttemptTracker,
@@ -23,11 +24,23 @@ from src.dashboard.auth import (
     load_dashboard_users,
 )
 from src.detector import AUTHORIZED_DEVICE, BLACKLISTED_EXTERNAL_IP, UNAUTHORIZED_DEVICE
+from src.ips_config import CONFIG_KEYS, IpsConfigError
 from src.storage import (
     ALERT_SENT,
     ALERT_SUPPRESSED,
     ADMIN_BLACKLIST_ADD,
     ADMIN_BLACKLIST_REMOVE,
+    ADMIN_IPS_APPLY_FAILED,
+    ADMIN_IPS_APPLY_REQUESTED,
+    ADMIN_IPS_APPLY_SUCCESS,
+    ADMIN_IPS_CONFIG_CHANGED,
+    ADMIN_IPS_DISABLED,
+    ADMIN_IPS_DRY_RUN_DISABLED,
+    ADMIN_IPS_DRY_RUN_ENABLED,
+    ADMIN_IPS_ENABLED,
+    ADMIN_IPS_POLICY_CHANGED,
+    ADMIN_IPS_REMOVE_REQUESTED,
+    ADMIN_IPS_REMOVE_SUCCESS,
     ADMIN_LOGIN_FAILED,
     ADMIN_LOGIN_SUCCESS,
     ADMIN_LOGOUT,
@@ -166,6 +179,18 @@ class AdminListData:
     blacklist_entries: tuple[blacklist.BlacklistEntry, ...]
     whitelist_error: str | None = None
     blacklist_error: str | None = None
+    admin_email: str | None = None
+
+
+@dataclass(frozen=True)
+class IPSAdminView:
+    """Read-only snapshot for the IPS admin page."""
+
+    operational: dict[str, Any]
+    settings: Any
+    nft_available: bool
+    config_file: str
+    error: str | None = None
 
 
 def create_app(config: Any | None = None, *, event_store_factory=SQLiteEventStore) -> Any:
@@ -359,6 +384,24 @@ def create_app(config: Any | None = None, *, event_store_factory=SQLiteEventStor
 
         data = _load_admin_list_data(runtime_config)
         return _render_admin_lists_html(data, notice=notice)
+
+    @app.route("/admin/ips", methods=["GET", "POST"])
+    def admin_ips():
+        runtime_config = app.config["GLEIPNIR_CONFIG"]
+        if not _dashboard_auth_enabled(runtime_config):
+            return _render_admin_unavailable_html(), 404
+        if _current_dashboard_role() != "admin":
+            return _render_admin_access_denied_html(), 403
+
+        notice: dict[str, str] | None = None
+        rules_preview: tuple[str, ...] | None = None
+        if request.method in CSRF_PROTECTED_METHODS:
+            if not _valid_csrf_token(request.form):
+                return _csrf_error_response(), 400
+            notice, rules_preview = _handle_admin_ips_post(runtime_config, request.form)
+
+        view = _load_ips_admin_view(runtime_config)
+        return _render_admin_ips_html(view, notice=notice, rules_preview=rules_preview)
 
     return app
 
@@ -659,11 +702,14 @@ def _load_admin_list_data(config: Any) -> AdminListData:
     else:
         blacklist_error = "Blacklist file does not exist yet."
 
+    admin_email = _clean_config_value(getattr(config, "admin_email", None))
+
     return AdminListData(
         whitelist_entries=whitelist_entries,
         blacklist_entries=blacklist_entries,
         whitelist_error=whitelist_error,
         blacklist_error=blacklist_error,
+        admin_email=admin_email,
     )
 
 
@@ -729,11 +775,209 @@ def _handle_admin_list_post(config: Any, form: Mapping[str, Any]) -> dict[str, s
             _record_admin_action(config, action, target, "success", details)
             return _admin_notice("success", f"Blacklist valid: {len(entries)} entry(s)")
 
+        if action == "admin_email_set":
+            target = "admin_email"
+            from src.config import set_admin_email
+
+            new_email = set_admin_email(_form_value(form, "admin_email"))
+            _record_admin_action(config, action, target, "success", f"admin_email={new_email}")
+            return _admin_notice(
+                "success",
+                f"Correo del administrador actualizado en .env: {new_email}. "
+                "Reinicia el dashboard para que el cambio surta efecto.",
+            )
+
         _record_admin_action(config, action or "unknown", target, "error", "unknown action")
         return _admin_notice("error", "Unknown administrative action.")
-    except (OSError, AttributeError, blacklist.BlacklistError, whitelist.WhitelistError) as exc:
+    except (
+        OSError,
+        AttributeError,
+        ConfigError,
+        blacklist.BlacklistError,
+        whitelist.WhitelistError,
+    ) as exc:
         _record_admin_action(config, action or "unknown", target, "error", "validation failed")
         return _admin_notice("error", str(exc))
+
+
+def _load_ips_admin_view(config: Any) -> IPSAdminView:
+    config_file = str(getattr(config, "ips_config_file", "data/ips_config.json"))
+    try:
+        operational = ips_config.load_ips_config(config)
+        settings = ips_config.build_ips_settings(config)
+        error = None
+    except IpsConfigError as exc:
+        operational = ips_config.get_default_ips_config()
+        settings = firewall.IPSSettings()
+        error = str(exc)
+
+    return IPSAdminView(
+        operational=operational,
+        settings=settings,
+        nft_available=firewall.is_nft_available(),
+        config_file=config_file,
+        error=error,
+    )
+
+
+def _handle_admin_ips_post(
+    config: Any,
+    form: Mapping[str, Any],
+) -> tuple[dict[str, str] | None, tuple[str, ...] | None]:
+    action = _form_value(form, "action")
+    try:
+        if action == "ips_update":
+            return _handle_ips_config_update(config, form), None
+        if action == "ips_dry_run":
+            return _handle_ips_dry_run_preview(config)
+        if action == "ips_apply":
+            return _handle_ips_apply_request(config), None
+        if action == "ips_remove":
+            return _handle_ips_remove_request(config), None
+
+        return _admin_notice("error", "Accion IPS desconocida."), None
+    except IpsConfigError as exc:
+        _record_ips_audit(config, ADMIN_IPS_CONFIG_CHANGED, "error", str(exc))
+        return _admin_notice("error", str(exc)), None
+
+
+def _handle_ips_config_update(config: Any, form: Mapping[str, Any]) -> dict[str, str]:
+    old = ips_config.load_ips_config(config)
+    changes = {key: _form_value(form, key) for key in CONFIG_KEYS if _form_value(form, key) != ""}
+    if not changes:
+        return _admin_notice("error", "No se enviaron cambios de configuracion IPS.")
+
+    new = ips_config.update_ips_config(changes, config)
+    changed = {key: (old.get(key), new.get(key)) for key in CONFIG_KEYS if old.get(key) != new.get(key)}
+    details = ", ".join(f"{key}:{before}->{after}" for key, (before, after) in changed.items())
+    _record_ips_audit(config, ADMIN_IPS_CONFIG_CHANGED, "success", details or "sin cambios")
+
+    # Specific audit events for the most security-relevant transitions.
+    if "ips_enabled" in changed:
+        _record_ips_audit(
+            config,
+            ADMIN_IPS_ENABLED if new["ips_enabled"] else ADMIN_IPS_DISABLED,
+            "success",
+            f"ips_enabled->{new['ips_enabled']}",
+        )
+    if "dry_run" in changed:
+        _record_ips_audit(
+            config,
+            ADMIN_IPS_DRY_RUN_ENABLED if new["dry_run"] else ADMIN_IPS_DRY_RUN_DISABLED,
+            "success",
+            f"dry_run->{new['dry_run']}",
+        )
+    for policy_key in ("allowlist_policy", "blacklist_policy", "block_direction"):
+        if policy_key in changed:
+            _record_ips_audit(
+                config,
+                ADMIN_IPS_POLICY_CHANGED,
+                "success",
+                f"{policy_key}->{new[policy_key]}",
+            )
+
+    return _admin_notice("success", "Configuracion IPS actualizada.")
+
+
+def _load_ips_lists(config: Any) -> tuple[tuple[Any, ...], tuple[Any, ...]]:
+    whitelist_entries: tuple[Any, ...] = ()
+    blacklist_entries: tuple[Any, ...] = ()
+    whitelist_path = Path(getattr(config, "whitelist_file", "data/whitelist.csv"))
+    blacklist_path = Path(getattr(config, "blacklist_file", "data/blacklist.txt"))
+    if whitelist_path.exists():
+        try:
+            whitelist_entries = whitelist.load_whitelist(whitelist_path)
+        except (OSError, whitelist.WhitelistError):
+            whitelist_entries = ()
+    if blacklist_path.exists():
+        try:
+            blacklist_entries = blacklist.list_blacklist_entries(blacklist_path)
+        except (OSError, blacklist.BlacklistError):
+            blacklist_entries = ()
+    return whitelist_entries, blacklist_entries
+
+
+def _handle_ips_dry_run_preview(config: Any) -> tuple[dict[str, str], tuple[str, ...]]:
+    settings = ips_config.build_ips_settings(config)
+    whitelist_entries, blacklist_entries = _load_ips_lists(config)
+    result = firewall.dry_run_rules(whitelist_entries, blacklist_entries, settings)
+    return (
+        _admin_notice("success", "Dry-run generado (no se modifico el sistema)."),
+        result.rules,
+    )
+
+
+def _handle_ips_apply_request(config: Any) -> dict[str, str]:
+    _record_ips_audit(config, ADMIN_IPS_APPLY_REQUESTED, "requested", "dashboard apply")
+    settings = ips_config.build_ips_settings(config)
+
+    if not settings.auto_apply:
+        _record_ips_audit(config, ADMIN_IPS_APPLY_FAILED, "blocked", "auto_apply=false")
+        return _admin_notice(
+            "error",
+            "Aplicar reglas reales desde el dashboard requiere auto_apply=true. "
+            "Se recomienda usar: sudo .venv/bin/gleipnir ips apply",
+        )
+    if not (settings.enabled and not settings.dry_run):
+        _record_ips_audit(config, ADMIN_IPS_APPLY_FAILED, "blocked", "not_effectively_active")
+        return _admin_notice(
+            "error",
+            "Activa IPS y desactiva dry-run antes de aplicar reglas reales.",
+        )
+    if not firewall.is_nft_available() or not firewall.has_required_permissions():
+        _record_ips_audit(config, ADMIN_IPS_APPLY_FAILED, "no_permissions", "nft/permissions")
+        return _admin_notice(
+            "error",
+            "El dashboard no tiene permisos para aplicar reglas nftables. "
+            "Usa sudo .venv/bin/gleipnir ips apply desde terminal.",
+        )
+
+    whitelist_entries, blacklist_entries = _load_ips_lists(config)
+    result = firewall.sync_firewall_rules(whitelist_entries, blacklist_entries, settings)
+    if result.applied:
+        _record_ips_audit(config, ADMIN_IPS_APPLY_SUCCESS, "success", "rules applied")
+        return _admin_notice("success", "Reglas IPS aplicadas.")
+
+    _record_ips_audit(config, ADMIN_IPS_APPLY_FAILED, "failed", str(result.reason))
+    return _admin_notice("error", f"No se aplicaron reglas: {result.reason}")
+
+
+def _handle_ips_remove_request(config: Any) -> dict[str, str]:
+    _record_ips_audit(config, ADMIN_IPS_REMOVE_REQUESTED, "requested", "dashboard remove")
+    settings = ips_config.build_ips_settings(config)
+    if not firewall.is_nft_available() or not firewall.has_required_permissions():
+        _record_ips_audit(config, ADMIN_IPS_APPLY_FAILED, "no_permissions", "nft/permissions")
+        return _admin_notice(
+            "error",
+            "El dashboard no tiene permisos para modificar nftables. "
+            "Usa sudo .venv/bin/gleipnir ips remove desde terminal.",
+        )
+
+    result = firewall.remove_gleipnir_rules(settings)
+    if result.applied or result.reason == "table_absent":
+        _record_ips_audit(config, ADMIN_IPS_REMOVE_SUCCESS, "success", str(result.reason or "removed"))
+        return _admin_notice("success", "Reglas IPS de Gleipnir removidas (solo la tabla propia).")
+
+    _record_ips_audit(config, ADMIN_IPS_APPLY_FAILED, "failed", str(result.reason))
+    return _admin_notice("error", f"No se pudieron remover reglas: {result.reason}")
+
+
+def _record_ips_audit(config: Any, event_type: str, result: str, details: str) -> None:
+    username = _current_dashboard_username()
+    message = (
+        f"Dashboard IPS admin: user={_audit_username(username)} "
+        f"event={event_type} result={result} details={details}"
+    )
+    _record_dashboard_audit_event(
+        config,
+        event_type,
+        username=username,
+        action="ips_admin",
+        result=result,
+        message=message,
+        target="ips",
+        details=details,
+    )
 
 
 def _record_admin_action(
@@ -1119,6 +1363,7 @@ def _render_dashboard_html(
     charts = _render_charts(data.charts)
     admin_link = (
         '<a class="nav-link" href="/admin/lists">Administrar listas</a>'
+        '<a class="nav-link" href="/admin/ips">IPS/Firewall</a>'
         if admin_available
         else ""
     )
@@ -2023,10 +2268,167 @@ def _render_admin_lists_html(
           {_render_validate_form("blacklist_validate", "Validar blacklist", csrf_token)}
         </div>
       </section>
+      <section>
+        <h2>Correo del administrador</h2>
+        <div class="section-body">
+          {_render_admin_email_form(data.admin_email, csrf_token)}
+        </div>
+      </section>
     </div>
   </main>
 </body>
 </html>"""
+
+
+def _render_admin_ips_html(
+    view: IPSAdminView,
+    *,
+    notice: dict[str, str] | None = None,
+    rules_preview: tuple[str, ...] | None = None,
+) -> str:
+    notice_html = _render_admin_notice(notice)
+    error_html = _render_admin_status(view.error)
+    csrf_token = _get_csrf_token()
+    op = view.operational
+    settings = view.settings
+
+    status_rows = "".join(
+        _render_detail_row(label, value)
+        for label, value in (
+            ("IPS habilitado", op.get("ips_enabled")),
+            ("Dry-run", op.get("dry_run")),
+            ("Backend", settings.backend),
+            ("Tabla / cadena", f"inet {settings.table} / {settings.chain}"),
+            ("Politica allowlist", op.get("allowlist_policy")),
+            ("Politica blacklist", op.get("blacklist_policy")),
+            ("Direccion de bloqueo", op.get("block_direction")),
+            ("Revisar IPs privadas", op.get("blacklist_check_private")),
+            ("Auto-apply", op.get("auto_apply")),
+            ("nft disponible", view.nft_available),
+            ("Archivo de config", view.config_file),
+        )
+    )
+
+    config_form = f"""
+    <form method="post" action="/admin/ips">
+      <input type="hidden" name="action" value="ips_update">
+      {_csrf_hidden_input(csrf_token)}
+      <h3>Cambiar configuracion</h3>
+      <div class="form-grid">
+        <div><label>ips_enabled</label>{_bool_select("ips_enabled", op.get("ips_enabled"))}</div>
+        <div><label>dry_run</label>{_bool_select("dry_run", op.get("dry_run"))}</div>
+        <div><label>allowlist_policy</label>{_choice_select("allowlist_policy", op.get("allowlist_policy"), ips_config.ALLOWLIST_POLICIES)}</div>
+        <div><label>blacklist_policy</label>{_choice_select("blacklist_policy", op.get("blacklist_policy"), ips_config.BLACKLIST_POLICIES)}</div>
+        <div><label>block_direction</label>{_choice_select("block_direction", op.get("block_direction"), ips_config.BLOCK_DIRECTIONS)}</div>
+        <div><label>blacklist_check_private</label>{_bool_select("blacklist_check_private", op.get("blacklist_check_private"))}</div>
+        <div><label>auto_apply</label>{_bool_select("auto_apply", op.get("auto_apply"))}</div>
+        <div><button type="submit">Guardar configuracion</button></div>
+      </div>
+    </form>
+    """
+
+    action_forms = f"""
+    <form method="post" action="/admin/ips">
+      <input type="hidden" name="action" value="ips_dry_run">
+      {_csrf_hidden_input(csrf_token)}
+      <button type="submit">Ver reglas (dry-run)</button>
+    </form>
+    <form method="post" action="/admin/ips">
+      <input type="hidden" name="action" value="ips_apply">
+      {_csrf_hidden_input(csrf_token)}
+      <button type="submit">Aplicar reglas reales</button>
+    </form>
+    <form class="danger" method="post" action="/admin/ips">
+      <input type="hidden" name="action" value="ips_remove">
+      {_csrf_hidden_input(csrf_token)}
+      <button type="submit">Remover reglas de Gleipnir</button>
+    </form>
+    """
+
+    rules_html = ""
+    if rules_preview:
+        joined = "\n".join(rules_preview)
+        rules_html = f"<h3>Reglas (dry-run)</h3><pre>{html.escape(joined)}</pre>"
+
+    return f"""<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>IPS/Firewall - Gleipnir IDS</title>
+  <style>
+    body {{ margin: 0; font-family: Arial, Helvetica, sans-serif; background: #f6f7f9; color: #1d2433; }}
+    header {{ padding: 20px 24px; background: #111827; color: white; }}
+    header h1 {{ margin: 0 0 6px; font-size: 24px; }}
+    main {{ max-width: 1080px; margin: 0 auto; padding: 24px; }}
+    a {{ color: #1f6feb; }}
+    .actions {{ margin-bottom: 16px; }}
+    .notice {{ margin-bottom: 18px; padding: 12px 14px; border-radius: 6px; border: 1px solid #d8dee8; background: #fff; }}
+    .notice.success {{ border-left: 4px solid #027a48; }}
+    .notice.error {{ border-left: 4px solid #b42318; }}
+    .status {{ margin: 0 0 12px; padding: 10px 12px; border: 1px solid #d8dee8; border-left: 4px solid #b54708; border-radius: 6px; background: #fff; }}
+    section {{ background: #fff; border: 1px solid #d8dee8; border-radius: 6px; overflow: hidden; margin-bottom: 18px; }}
+    section h2 {{ margin: 0; padding: 14px 16px; font-size: 18px; border-bottom: 1px solid #d8dee8; }}
+    .section-body {{ padding: 16px; }}
+    .row {{ display: grid; grid-template-columns: minmax(180px, 240px) 1fr; gap: 14px; padding: 10px 14px; border-bottom: 1px solid #eef1f5; }}
+    .label {{ color: #687385; font-weight: 600; }}
+    form {{ border: 1px solid #d8dee8; border-radius: 6px; padding: 12px; margin-bottom: 12px; background: #fbfcfe; }}
+    .form-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px; align-items: end; }}
+    label {{ display: block; color: #687385; font-size: 13px; margin-bottom: 5px; }}
+    select, button {{ min-height: 36px; border-radius: 5px; font: inherit; }}
+    select {{ width: 100%; border: 1px solid #d8dee8; padding: 7px 9px; background: white; }}
+    button {{ border: 1px solid #1f6feb; padding: 7px 12px; background: #1f6feb; color: white; cursor: pointer; }}
+    .danger button {{ border-color: #b42318; background: #b42318; }}
+    pre {{ margin: 0; padding: 16px; overflow-x: auto; background: #111827; color: #e5e7eb; border-radius: 6px; font-size: 13px; }}
+  </style>
+</head>
+<body>
+  <header>
+    <h1>IPS/Firewall (opcional)</h1>
+    <p>Gleipnir es IDS pasivo por defecto. Esta seccion es solo para rol admin.</p>
+  </header>
+  <main>
+    <div class="actions"><a href="/">Volver al dashboard</a></div>
+    {notice_html}
+    {error_html}
+    <section>
+      <h2>Estado actual</h2>
+      <div class="section-body">{status_rows}</div>
+    </section>
+    <section>
+      <h2>Administracion</h2>
+      <div class="section-body">
+        <p class="status">Cambiar la configuracion edita <code>{html.escape(view.config_file)}</code>,
+        no el archivo .env. Aplicar reglas reales requiere permisos root del proceso;
+        se recomienda usar <code>sudo .venv/bin/gleipnir ips apply</code> desde terminal.
+        El dashboard nunca pide ni almacena contrasenas sudo.</p>
+        {config_form}
+        {action_forms}
+        {rules_html}
+      </div>
+    </section>
+  </main>
+</body>
+</html>"""
+
+
+def _bool_select(name: str, value: Any) -> str:
+    current = "true" if bool(value) else "false"
+    options = "".join(
+        f'<option value="{opt}"{" selected" if opt == current else ""}>{opt}</option>'
+        for opt in ("true", "false")
+    )
+    return f'<select name="{html.escape(name)}">{options}</select>'
+
+
+def _choice_select(name: str, value: Any, options: tuple[str, ...]) -> str:
+    current = str(value)
+    rendered = "".join(
+        f'<option value="{html.escape(opt)}"{" selected" if opt == current else ""}>'
+        f"{html.escape(opt)}</option>"
+        for opt in options
+    )
+    return f'<select name="{html.escape(name)}">{rendered}</select>'
 
 
 def _render_admin_unavailable_html() -> str:
@@ -2240,6 +2642,30 @@ def _render_blacklist_remove_form(csrf_token: str) -> str:
         </div>
         <div>
           <button type="submit">Eliminar</button>
+        </div>
+      </div>
+    </form>
+    """
+
+
+def _render_admin_email_form(admin_email: str | None, csrf_token: str) -> str:
+    current = html.escape(admin_email or "(no configurado)")
+    current_value = html.escape(admin_email or "")
+    return f"""
+    <p class="status">Correo actual: <strong>{current}</strong>. El cambio se
+    guarda en <code>.env</code> y se aplica al reiniciar el dashboard.</p>
+    <form method="post" action="/admin/lists">
+      <input type="hidden" name="action" value="admin_email_set">
+      {_csrf_hidden_input(csrf_token)}
+      <h3>Cambiar correo del administrador</h3>
+      <div class="form-grid">
+        <div>
+          <label for="admin_email">Nuevo correo</label>
+          <input id="admin_email" name="admin_email" type="email" required
+                 value="{current_value}" placeholder="admin@example.org">
+        </div>
+        <div>
+          <button type="submit">Actualizar correo</button>
         </div>
       </div>
     </form>

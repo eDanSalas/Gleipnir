@@ -164,6 +164,7 @@ SMTP_PASSWORD=
 ADMIN_EMAIL=admin@example.org
 
 WHITELIST_FILE=data/whitelist.csv
+WHITELIST_AUTH_POLICY=strict
 BLACKLIST_FILE=data/blacklist.txt
 LOG_DIR=logs/
 REPORT_DIR=logs/reports/
@@ -205,6 +206,7 @@ DASHBOARD_LOGIN_LOCKOUT_SECONDS=300
 | `SMTP_PASSWORD` | Si | Contrasena o password de aplicacion de la cuenta SMTP. Es secreto. |
 | `ADMIN_EMAIL` | Si | Correo del administrador que recibira alertas del IDS. |
 | `WHITELIST_FILE` | Si | Ruta del CSV de lista blanca, por ejemplo `data/whitelist.csv`. |
+| `WHITELIST_AUTH_POLICY` | No | Politica de autorizacion: `strict` o `ip_fallback`. Valor recomendado y por defecto: `strict`. |
 | `BLACKLIST_FILE` | Si | Ruta del TXT de lista negra, por ejemplo `data/blacklist.txt`. |
 | `LOG_DIR` | Si | Directorio donde Gleipnir escribira logs y cache operativo, por ejemplo `logs/`. |
 | `REPORT_DIR` | No | Directorio de reportes JSON/CSV. Si se omite, se usa `LOG_DIR`. |
@@ -364,6 +366,56 @@ Campos:
 El modulo valida IP y MAC. Si el archivo esta mal formado, se reporta error con
 informacion de la linea.
 
+Tambien se validan duplicados. La whitelist se considera invalida si contiene:
+
+- IP duplicada.
+- MAC duplicada.
+- La misma IP asociada a distintas MAC.
+- La misma MAC asociada a distintas IP.
+
+Ejemplo valido:
+
+```csv
+ip,mac,description
+192.168.1.10,aa:bb:cc:dd:ee:ff,Laptop administracion
+192.168.1.11,00:11:22:33:44:55,Equipo laboratorio
+```
+
+Ejemplo invalido por IP duplicada:
+
+```csv
+ip,mac,description
+192.168.1.10,aa:bb:cc:dd:ee:ff,Laptop administracion
+192.168.1.10,00:11:22:33:44:55,Otro equipo
+```
+
+Ejemplo invalido por MAC duplicada en otra IP:
+
+```csv
+ip,mac,description
+192.168.1.10,aa:bb:cc:dd:ee:ff,Laptop administracion
+192.168.1.11,aa:bb:cc:dd:ee:ff,Equipo duplicado
+```
+
+### Politica de autorizacion IP/MAC
+
+La variable `WHITELIST_AUTH_POLICY` controla como se decide si un dispositivo es
+autorizado:
+
+- `strict`: politica por defecto y recomendada. Cuando IP y MAC estan
+  disponibles, ambas deben coincidir con una misma entrada de whitelist. Si la
+  MAC no esta disponible, el equipo no se autoriza y el evento queda con motivo
+  `mac_missing_strict_policy`.
+- `ip_fallback`: cuando la MAC no esta disponible por el tipo de captura,
+  permite autorizar por IP si esa IP esta en whitelist. Si IP y MAC si estan
+  disponibles, ambas deben coincidir. El evento autorizado indica
+  `authorized_by=ip_fallback` y el uso del fallback queda registrado en logs.
+
+Los eventos `AUTHORIZED_DEVICE` indican `authorized_by=ip_mac` o
+`authorized_by=ip_fallback`. Los eventos `UNAUTHORIZED_DEVICE` incluyen el
+motivo: `ip_not_in_whitelist`, `mac_not_in_whitelist`,
+`ip_mac_pair_mismatch` o `mac_missing_strict_policy`.
+
 Administracion desde CLI:
 
 ```bash
@@ -377,14 +429,20 @@ gleipnir whitelist validate
 
 Archivo por defecto: `data/blacklist.txt`.
 
-Formato TXT:
+Formato TXT compatible:
 
 ```text
-# Una IP por linea
-8.8.8.8
+# Formato recomendado: IP,Riesgo
+8.8.8.8,Botnet
+1.1.1.1,Malware
+9.9.9.9,Virus
+208.67.222.222,Phishing
+
+# Tambien se acepta una IP por linea; el riesgo se interpreta como Unknown
 2001:4860:4860::8888
 ```
 
+Riesgos soportados: `Virus`, `Malware`, `Botnet`, `Phishing` y `Unknown`.
 Solo se aceptan IPs individuales. El codigo actual no acepta rangos CIDR en la
 lista negra.
 
@@ -392,7 +450,7 @@ Administracion desde CLI:
 
 ```bash
 gleipnir blacklist list
-gleipnir blacklist add --ip 8.8.8.8 --reason "IP externa reportada como peligrosa"
+gleipnir blacklist add --ip 8.8.8.8 --reason "Botnet"
 gleipnir blacklist remove --ip 8.8.8.8
 gleipnir blacklist validate
 ```
@@ -601,6 +659,30 @@ Las alertas usan `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD` y
 El modulo `src/mailer.py` usa TLS mediante `starttls()`. Las pruebas usan mocks
 y no envian correos reales.
 
+### Cambiar el correo del administrador
+
+El destinatario de las alertas (`ADMIN_EMAIL`) se puede cambiar sin editar el
+codigo, de dos formas:
+
+- **CLI** (acceso local; identificacion/autenticacion/autorizacion las aporta el
+  sistema operativo y los permisos del `.env`):
+
+  ```bash
+  gleipnir admin-email show
+  gleipnir admin-email set --email nuevo-admin@example.org
+  ```
+
+  El comando valida el formato del correo y reescribe `ADMIN_EMAIL` en `.env`
+  conservando el resto de variables. Reinicia los procesos `live`/`replay`/
+  `dashboard` para aplicar el cambio. Si `ADMIN_EMAIL` esta definido como
+  variable de entorno del proceso, esta tiene prioridad sobre `.env`.
+
+- **Dashboard** (en la seccion protegida *Administracion de listas* →
+  *Correo del administrador*). Requiere `DASHBOARD_AUTH_ENABLED=true`, haber
+  iniciado sesion (autenticacion) y tener rol `admin` (autorizacion); el envio
+  esta protegido con token CSRF y la accion queda registrada en la bitacora de
+  auditoria con el usuario que la realizo.
+
 Si no llegan alertas:
 
 - Verificar usuario, password o password de aplicacion del proveedor SMTP.
@@ -608,6 +690,51 @@ Si no llegan alertas:
 - Confirmar que `SMTP_PORT` sea correcto, normalmente `587`.
 - Validar que el proveedor permita SMTP desde la red institucional.
 - Ejecutar `gleipnir test-config`.
+
+## 13b. Capa opcional IPS/Firewall (nftables)
+
+Gleipnir es un **IDS pasivo** por defecto: detecta, registra y alerta, pero **no
+bloquea** trafico. Existe una capa **opcional** de enforcement defensivo con
+`nftables`, pensada solo para red propia/laboratorio y desactivada por defecto.
+
+Configuracion (ver detalle en `docs/ips_firewall.md`):
+
+- `.env` solo guarda valores base: `IPS_CONFIG_FILE`, `IPS_BACKEND`, `IPS_TABLE`,
+  `IPS_CHAIN`.
+- La configuracion **operativa** vive en `data/ips_config.json` (editable por CLI
+  o dashboard) con: `ips_enabled`, `dry_run`, `allowlist_policy`,
+  `blacklist_policy`, `block_direction`, `blacklist_check_private`, `auto_apply`.
+
+Comandos (configurar, no aplica reglas):
+
+```bash
+gleipnir ips config show
+gleipnir ips enable            # ips_enabled=true
+gleipnir ips disable
+gleipnir ips dry-run-enable
+gleipnir ips dry-run-disable
+gleipnir ips policy allowlist --mode allow_registered
+gleipnir ips policy blacklist --mode block
+gleipnir ips direction --mode both
+gleipnir ips private-check enable
+gleipnir ips auto-apply disable
+```
+
+Comandos (ver/aplicar/remover):
+
+```bash
+gleipnir ips status            # estado, backend y disponibilidad de nft
+gleipnir ips dry-run           # muestra reglas SIN aplicarlas (recomendado)
+gleipnir ips rules             # ruleset nftables generado
+sudo .venv/bin/gleipnir ips apply    # requiere ips_enabled=true y dry_run=false
+sudo .venv/bin/gleipnir ips remove   # borra solo la tabla inet gleipnir
+```
+
+`ips apply` rechaza la ejecucion si `ips_enabled=false` o `dry_run=true` y explica
+como cambiarlo. Tambien se puede administrar desde el dashboard en `/admin/ips`
+(solo rol admin; no edita `.env` ni pide contrasenas sudo). La coincidencia por
+MAC solo es fiable en el mismo segmento Ethernet; en trafico enrutado se prefieren
+reglas por IP.
 
 ## 14. Politicas de alerta
 
@@ -627,6 +754,8 @@ un correo, se guarda `ALERT_SUPPRESSED`; cuando se envia, se guarda
 - `critical`
 
 La severidad `critical` no se bloquea por cooldown ni por limite por minuto.
+El primer evento de un grupo nuevo se envia al administrador; la politica
+anti-spam solo debe suprimir eventos repetidos posteriores.
 
 ## 15. Threat Intelligence
 
@@ -648,6 +777,15 @@ LOG_DIR/threat_intel_cache.json
 
 Las consultas de threat intelligence se hacen solo cuando existe una IP externa
 relevante o en blacklist; no se consultan APIs para todo el trafico.
+
+Cuando se genera `BLACKLISTED_EXTERNAL_IP`, Gleipnir envia primero una
+`ALERTA DE EMERGENCIA - IP peligrosa detectada` con timestamp, IP origen, IP
+destino, protocolo, tipo de riesgo, severidad y recomendacion de revision.
+Despues del enriquecimiento, si hay resultados AbuseIPDB, VirusTotal o Whois,
+envia un segundo correo de `Reporte Forense` al `ADMIN_EMAIL`. Ese reporte
+incluye la IP peligrosa, el tipo de riesgo, datos de reputacion, datos Whois,
+contacto de abuso si existe y una nota para que el administrador pueda
+investigar o reportar al proveedor.
 
 ## 16. SQLite
 

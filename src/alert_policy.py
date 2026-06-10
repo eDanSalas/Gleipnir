@@ -103,9 +103,18 @@ class AlertPolicy:
 
         self._prune_sent_window(now)
         last_sent = self._last_sent_by_key.get(request.group_key)
+        if last_sent is None:
+            self._record_sent(request.group_key, now)
+            return AlertDecision(
+                sent=True,
+                suppressed=False,
+                severity=severity,
+                group_key=request.group_key,
+                timestamp=now,
+            )
+
         if (
-            last_sent is not None
-            and self.cooldown_seconds > 0
+            self.cooldown_seconds > 0
             and now - last_sent < self.cooldown_seconds
         ):
             return AlertDecision(
@@ -219,6 +228,10 @@ def normalize_severity(value: str | None) -> str:
 
 
 def _event_type_from_subject(subject: str) -> str | None:
+    for event_type in ("BLACKLISTED_EXTERNAL_IP", "UNAUTHORIZED_DEVICE"):
+        if event_type in subject:
+            return event_type
+
     if ":" not in subject:
         return None
 
@@ -270,7 +283,12 @@ def _group_key(
     recipient: str,
 ) -> str:
     if event_type == "BLACKLISTED_EXTERNAL_IP":
-        destination_ip = fields.get("ip_destino") or fields.get("destination_ip")
+        destination_ip = (
+            fields.get("ip_destino")
+            or fields.get("destination_ip")
+            or fields.get("ip_peligrosa")
+            or fields.get("ip_destino_peligrosa")
+        )
         if destination_ip:
             return f"{event_type}|dst={destination_ip}"
 

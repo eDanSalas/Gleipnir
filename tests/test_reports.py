@@ -50,12 +50,24 @@ class ReportsTests(unittest.TestCase):
         self.assertEqual(json_payload["summary"]["unauthorized_devices"], 1)
         self.assertEqual(json_payload["summary"]["dns_events"], 1)
         self.assertEqual(json_payload["summary"]["http_events"], 1)
+        self.assertEqual(
+            json_payload["dns_events"][0]["dominio_consultado"],
+            "example.org",
+        )
+        self.assertEqual(
+            json_payload["http_events"][0]["host"],
+            "example.org",
+        )
         self.assertEqual(json_payload["summary"]["blacklisted_external_ips"], 1)
         self.assertEqual(json_payload["summary"]["threat_intel_results"], 1)
         self.assertEqual(json_payload["summary"]["alert_events"], 0)
         self.assertEqual(len(csv_rows), 6)
         self.assertEqual(csv_rows[0]["category"], "authorized_device")
         self.assertIn("ip_origen", csv_rows[0])
+        dns_row = next(row for row in csv_rows if row["category"] == "dns_event")
+        http_row = next(row for row in csv_rows if row["category"] == "http_event")
+        self.assertEqual(dns_row["dominio_consultado"], "example.org")
+        self.assertEqual(http_row["host"], "example.org")
 
     def test_generate_reports_uses_config_report_dir_and_creates_directory(self) -> None:
         with TemporaryDirectory() as temp_dir:

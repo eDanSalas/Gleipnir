@@ -1,0 +1,9 @@
+{
+  "allowlist_policy": "monitor",
+  "auto_apply": false,
+  "blacklist_check_private": false,
+  "blacklist_policy": "block",
+  "block_direction": "both",
+  "dry_run": true,
+  "ips_enabled": false
+}

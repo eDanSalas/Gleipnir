@@ -90,7 +90,16 @@ password, token, secret y API keys.
 ### `src/whitelist.py`
 
 Lee `data/whitelist.csv` con columnas `ip,mac,description`. Valida IPv4, IPv6 y
-MAC. Expone `load_whitelist()` e `is_authorized(ip, mac)`.
+MAC. Rechaza duplicados de IP, duplicados de MAC, una IP asociada a distintas
+MAC y una MAC asociada a distintas IPs. Expone `load_whitelist()`,
+`check_authorization(ip, mac, policy=...)` e `is_authorized(ip, mac)`.
+
+La politica de autorizacion se configura con `WHITELIST_AUTH_POLICY`:
+
+- `strict`: modo por defecto. Requiere que IP y MAC coincidan con el mismo par
+  de whitelist; si falta MAC no autoriza el equipo.
+- `ip_fallback`: si la captura no incluye MAC, puede autorizar por IP. Si IP y
+  MAC estan disponibles, mantiene la exigencia de coincidencia IP/MAC.
 
 ### `src/blacklist.py`
 
@@ -121,13 +130,21 @@ Produce eventos de identidad:
 - `AUTHORIZED_DEVICE`.
 - `UNAUTHORIZED_DEVICE`.
 
-Tambien detecta destinos externos en lista negra:
+Tambien detecta IPs en lista negra en origen y destino, con clasificacion
+direccional (el `event_type` base `BLACKLISTED_EXTERNAL_IP` se conserva para
+almacenamiento/reportes):
 
-- `BLACKLISTED_EXTERNAL_IP`.
+- `BLACKLISTED_EXTERNAL_IP_OUTBOUND` (interna -> externa peligrosa).
+- `BLACKLISTED_EXTERNAL_IP_INBOUND` (externa peligrosa -> interna).
+- `BLACKLISTED_PRIVATE_IP` (IP privada/local, si `BLACKLIST_CHECK_PRIVATE=true`).
 
 Integra lista blanca, lista negra, logger y mailer.
 Antes de llamar al mailer, el flujo normal puede pasar por `alert_policy.py`
 para evitar correos repetidos.
+Los eventos `AUTHORIZED_DEVICE` incluyen `authorized_by` (`ip_mac` o
+`ip_fallback`) y los eventos `UNAUTHORIZED_DEVICE` incluyen `unauthorized_reason`
+(`ip_not_in_whitelist`, `mac_not_in_whitelist`, `ip_mac_pair_mismatch` o
+`mac_missing_strict_policy`).
 
 ### `src/alert_policy.py`
 
@@ -168,6 +185,20 @@ politicas de alerta y almacenamiento SQLite. Sus metodos principales son:
 - `process_packet_event(event)`
 - `process_dns_http_event(event)`
 - `shutdown()`
+
+Cuando `IPS_ENABLED=true`, el engine aplica ademas politicas de enforcement
+defensivo por evento (delegando en `firewall.py`) y produce eventos
+`IPS_BLOCKED_BLACKLISTED_IP` / `IPS_BLOCKED_UNREGISTERED_DEVICE`. Con IPS
+desactivado (por defecto) su comportamiento es identico al IDS pasivo.
+
+### `src/firewall.py`
+
+Capa OPCIONAL de IPS/Firewall con nftables, desactivada por defecto. Genera
+reglas (`build_allowlist_rules`, `build_blacklist_rules`, `build_ruleset`),
+las aplica solo con `IPS_ENABLED=true` e `IPS_DRY_RUN=false`
+(`apply_rules`, `sync_firewall_rules`, `block_ip`) y limpia unicamente la tabla
+propia (`remove_gleipnir_rules`). Nunca hace flush global ni toca reglas
+externas; los errores del backend no detienen el IDS. Ver `docs/ips_firewall.md`.
 
 ### `src/storage.py`
 
@@ -278,6 +309,8 @@ Plantilla de servicio para Ubuntu 24.04 LTS. Ejecuta Gleipnir desde
 2. `replay` o `live` entregan paquetes normalizados a `IDSEngine`.
 3. El sniffer convierte paquetes a `PacketEvent`.
 4. El detector compara origen IP/MAC contra whitelist.
+   La politica `WHITELIST_AUTH_POLICY` decide si se exige IP/MAC estricta o si
+   se permite fallback por IP cuando falta la MAC.
 5. El detector compara destino externo contra blacklist.
 6. El monitor DNS/HTTP extrae dominios, host, metodo y ruta si existen.
 7. Threat intelligence puede enriquecer IPs externas relevantes.

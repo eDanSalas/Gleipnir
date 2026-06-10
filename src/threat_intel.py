@@ -9,6 +9,7 @@ from __future__ import annotations
 import ipaddress
 import json
 import logging
+import re
 import subprocess
 import time
 from dataclasses import asdict, dataclass, field, replace
@@ -27,6 +28,7 @@ ABUSEIPDB_URL = "https://api.abuseipdb.com/api/v2/check"
 VIRUSTOTAL_IP_URL = "https://www.virustotal.com/api/v3/ip_addresses/{ip}"
 CACHE_FILE_NAME = "threat_intel_cache.json"
 DEFAULT_ABUSEIPDB_MAX_AGE_DAYS = 90
+EMAIL_PATTERN = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 
 STATUS_OK = "ok"
 STATUS_SKIPPED = "skipped"
@@ -264,11 +266,22 @@ def check_whois(
         _cache_set(result, config, cache)
         return result
 
+    if not output:
+        result = ThreatIntelResult(
+            service=service,
+            ip=normalized_ip,
+            status=STATUS_ERROR,
+            data={},
+            error="Incomplete Whois response",
+        )
+        _cache_set(result, config, cache)
+        return result
+
     result = ThreatIntelResult(
         service=service,
         ip=normalized_ip,
         status=STATUS_OK,
-        data={"raw": _truncate(output)},
+        data=_parse_whois_output(output),
     )
     _cache_set(result, config, cache)
     return result
@@ -484,6 +497,50 @@ def _looks_rate_limited(text: str) -> bool:
             "exceeded",
             "try again later",
         )
+    )
+
+
+def _parse_whois_output(output: str) -> dict[str, Any]:
+    parsed: dict[str, Any] = {"raw": _truncate(output)}
+    emails = sorted(set(EMAIL_PATTERN.findall(output)))
+    if emails:
+        parsed["emails"] = emails[:10]
+
+    for raw_line in output.splitlines():
+        if ":" not in raw_line:
+            continue
+
+        raw_key, raw_value = raw_line.split(":", maxsplit=1)
+        key = _normalize_whois_key(raw_key)
+        value = raw_value.strip()
+        if not value:
+            continue
+
+        if key in {"orgname", "organization", "owner", "responsible"}:
+            parsed.setdefault("organization", value)
+        elif key in {"netname", "descr", "description", "custname"}:
+            parsed.setdefault("provider", value)
+        elif key in {"originas", "origin", "autnum", "asn"}:
+            parsed.setdefault("asn", value)
+
+        if "abuse" in key and ("email" in key or "mailbox" in key or "contact" in key):
+            parsed.setdefault("abuse_contact", value)
+
+    if "abuse_contact" not in parsed:
+        abuse_email = next((email for email in emails if "abuse" in email.lower()), None)
+        if abuse_email:
+            parsed["abuse_contact"] = abuse_email
+
+    return parsed
+
+
+def _normalize_whois_key(value: str) -> str:
+    return (
+        value.strip()
+        .lower()
+        .replace("-", "")
+        .replace("_", "")
+        .replace(" ", "")
     )
 
 

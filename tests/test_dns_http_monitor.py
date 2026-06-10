@@ -187,6 +187,45 @@ class DnsHttpMonitorTests(unittest.TestCase):
         self.assertEqual(event.metodo, "GET")
         self.assertEqual(event.ruta, "/status")
 
+    def test_register_traffic_does_not_log_complete_raw_http_payload(self) -> None:
+        raw_layer = object()
+
+        class FakeRawLayer:
+            load = (
+                b"POST /login HTTP/1.1\r\n"
+                b"Host: Portal.Example.ORG\r\n"
+                b"\r\n"
+                b"password=super-secret-value"
+            )
+
+        class FakeScapyPacket:
+            def __contains__(self, layer: object) -> bool:
+                return layer is raw_layer
+
+            def __getitem__(self, layer: object) -> object:
+                if layer is raw_layer:
+                    return FakeRawLayer()
+                raise KeyError(layer)
+
+        with patch("src.dns_http_monitor.parse_packet", return_value=_packet_event()):
+            with patch(
+                "src.dns_http_monitor._load_scapy_app_layers",
+                return_value={
+                    "DNS": object(),
+                    "HTTPRequest": object(),
+                    "Raw": raw_layer,
+                },
+            ):
+                with self.assertLogs("gleipnir.dns_http_monitor", level="INFO") as logs:
+                    events = register_traffic(FakeScapyPacket())
+
+        emitted_text = "\n".join(logs.output)
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0].host, "portal.example.org")
+        self.assertIn("HTTP_TRAFFIC", emitted_text)
+        self.assertIn("portal.example.org", emitted_text)
+        self.assertNotIn("super-secret-value", emitted_text)
+
 
 def _base_packet(**extra):
     packet = {

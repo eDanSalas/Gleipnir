@@ -18,6 +18,8 @@ Uso en el proyecto:
 - Tramas Ethernet procesadas desde PCAP.
 - ARP en modo live con Scapy.
 - Validacion de identidad MAC contra whitelist.
+- En politica `strict`, la MAC debe coincidir con la IP autorizada del mismo
+  registro de whitelist.
 
 Modulos relacionados:
 
@@ -37,9 +39,12 @@ Uso en el proyecto:
 - IPv6.
 - IP origen.
 - IP destino.
+- Validacion de identidad IP contra whitelist.
 - Deteccion de destino externo.
 - Comparacion contra blacklist local.
 - Enriquecimiento de IP externa cuando se genera un evento relevante.
+- En politica `ip_fallback`, si la captura no trae MAC, la autorizacion puede
+  hacerse por IP registrada.
 
 Modulos relacionados:
 

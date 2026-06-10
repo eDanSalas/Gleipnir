@@ -10,7 +10,7 @@ import sys
 from datetime import datetime, time, timezone
 from typing import Any, Sequence, TextIO
 
-from src import blacklist, whitelist
+from src import blacklist, firewall, ips_config, whitelist
 from src.dashboard import create_app as create_dashboard_app
 from src.dashboard.auth import (
     change_dashboard_user_password,
@@ -336,7 +336,10 @@ def build_parser() -> argparse.ArgumentParser:
     blacklist_add.add_argument(
         "--reason",
         required=True,
-        help="Administrative reason for the blacklist entry.",
+        help=(
+            "Risk type for the blacklist entry: Virus, Malware, Botnet, "
+            "Phishing, or Unknown."
+        ),
     )
     blacklist_add.set_defaults(handler=_handle_blacklist_add)
 
@@ -352,6 +355,146 @@ def build_parser() -> argparse.ArgumentParser:
         help="Validate blacklist file format.",
     )
     blacklist_validate.set_defaults(handler=_handle_blacklist_validate)
+
+    admin_email_parser = subparsers.add_parser(
+        "admin-email",
+        help="Show or change the administrator alert email (ADMIN_EMAIL in .env).",
+    )
+    admin_email_subparsers = admin_email_parser.add_subparsers(
+        dest="admin_email_command",
+        required=True,
+    )
+
+    admin_email_show = admin_email_subparsers.add_parser(
+        "show",
+        help="Show the administrator email currently configured.",
+    )
+    admin_email_show.set_defaults(handler=_handle_admin_email_show)
+
+    admin_email_set = admin_email_subparsers.add_parser(
+        "set",
+        help="Change the administrator email stored in .env.",
+    )
+    admin_email_set.add_argument(
+        "--email",
+        required=True,
+        help="New administrator email address.",
+    )
+    admin_email_set.set_defaults(handler=_handle_admin_email_set)
+
+    ips_parser = subparsers.add_parser(
+        "ips",
+        help="Optional defensive IPS/firewall layer (nftables). IDS stays passive by default.",
+    )
+    ips_subparsers = ips_parser.add_subparsers(dest="ips_command", required=True)
+
+    ips_status = ips_subparsers.add_parser(
+        "status",
+        help="Show IPS configuration and nft availability without applying rules.",
+    )
+    ips_status.set_defaults(handler=_handle_ips_status)
+
+    ips_dry_run = ips_subparsers.add_parser(
+        "dry-run",
+        help="Show the nftables rules that would be applied. Does not modify the system.",
+    )
+    ips_dry_run.set_defaults(handler=_handle_ips_dry_run)
+
+    ips_apply = ips_subparsers.add_parser(
+        "apply",
+        help="Apply rules (requires IPS_ENABLED=true, IPS_DRY_RUN=false, and sudo/root).",
+    )
+    ips_apply.set_defaults(handler=_handle_ips_apply)
+
+    ips_remove = ips_subparsers.add_parser(
+        "remove",
+        help="Remove only Gleipnir's own nftables table/chain. Never touches external rules.",
+    )
+    ips_remove.set_defaults(handler=_handle_ips_remove)
+
+    ips_rules = ips_subparsers.add_parser(
+        "rules",
+        help="Print the generated nftables ruleset for the current lists.",
+    )
+    ips_rules.set_defaults(handler=_handle_ips_rules)
+
+    ips_config_parser = ips_subparsers.add_parser(
+        "config",
+        help="Show or set the operational IPS config (data/ips_config.json).",
+    )
+    ips_config_subparsers = ips_config_parser.add_subparsers(
+        dest="ips_config_command",
+        required=True,
+    )
+    ips_config_show = ips_config_subparsers.add_parser(
+        "show",
+        help="Show the current operational IPS configuration.",
+    )
+    ips_config_show.set_defaults(handler=_handle_ips_config_show)
+    ips_config_set = ips_config_subparsers.add_parser(
+        "set",
+        help="Set one operational IPS config key to a value.",
+    )
+    ips_config_set.add_argument("--key", required=True, help="Config key to change.")
+    ips_config_set.add_argument("--value", required=True, help="New value.")
+    ips_config_set.set_defaults(handler=_handle_ips_config_set)
+
+    ips_enable = ips_subparsers.add_parser("enable", help="Enable IPS in configuration (does not apply rules).")
+    ips_enable.set_defaults(handler=_handle_ips_enable)
+    ips_disable = ips_subparsers.add_parser("disable", help="Disable IPS in configuration.")
+    ips_disable.set_defaults(handler=_handle_ips_disable)
+
+    ips_dry_run_enable = ips_subparsers.add_parser("dry-run-enable", help="Enable dry-run mode.")
+    ips_dry_run_enable.set_defaults(handler=_handle_ips_dry_run_enable)
+    ips_dry_run_disable = ips_subparsers.add_parser("dry-run-disable", help="Disable dry-run mode.")
+    ips_dry_run_disable.set_defaults(handler=_handle_ips_dry_run_disable)
+
+    ips_policy = ips_subparsers.add_parser("policy", help="Change allowlist/blacklist policy.")
+    ips_policy_subparsers = ips_policy.add_subparsers(dest="ips_policy_command", required=True)
+    ips_policy_allowlist = ips_policy_subparsers.add_parser("allowlist", help="Set allowlist policy.")
+    ips_policy_allowlist.add_argument(
+        "--mode",
+        required=True,
+        choices=("monitor", "allow_registered", "block_unregistered"),
+    )
+    ips_policy_allowlist.set_defaults(handler=_handle_ips_policy_allowlist)
+    ips_policy_blacklist = ips_policy_subparsers.add_parser("blacklist", help="Set blacklist policy.")
+    ips_policy_blacklist.add_argument("--mode", required=True, choices=("monitor", "block"))
+    ips_policy_blacklist.set_defaults(handler=_handle_ips_policy_blacklist)
+
+    ips_direction = ips_subparsers.add_parser("direction", help="Set the block direction.")
+    ips_direction.add_argument("--mode", required=True, choices=("outbound", "inbound", "both"))
+    ips_direction.set_defaults(handler=_handle_ips_direction)
+
+    ips_private_check = ips_subparsers.add_parser(
+        "private-check",
+        help="Enable/disable checking private/local IPs against the blacklist.",
+    )
+    ips_private_check_subparsers = ips_private_check.add_subparsers(
+        dest="ips_private_check_command",
+        required=True,
+    )
+    ips_private_check_subparsers.add_parser("enable").set_defaults(
+        handler=_handle_ips_private_check_enable
+    )
+    ips_private_check_subparsers.add_parser("disable").set_defaults(
+        handler=_handle_ips_private_check_disable
+    )
+
+    ips_auto_apply = ips_subparsers.add_parser(
+        "auto-apply",
+        help="Enable/disable auto-apply (off by default for safety).",
+    )
+    ips_auto_apply_subparsers = ips_auto_apply.add_subparsers(
+        dest="ips_auto_apply_command",
+        required=True,
+    )
+    ips_auto_apply_subparsers.add_parser("enable").set_defaults(
+        handler=_handle_ips_auto_apply_enable
+    )
+    ips_auto_apply_subparsers.add_parser("disable").set_defaults(
+        handler=_handle_ips_auto_apply_disable
+    )
 
     return parser
 
@@ -887,6 +1030,295 @@ def _handle_blacklist_validate(
     entries = blacklist.validate_blacklist_file(config.blacklist_file)
     print(f"Blacklist valid: {len(entries)} entry(s)", file=stdout)
     return 0
+
+
+def _handle_admin_email_show(
+    _args: argparse.Namespace,
+    stdout: TextIO,
+    _stderr: TextIO,
+) -> int:
+    config = _load_config()
+    print(f"ADMIN_EMAIL: {config.admin_email}", file=stdout)
+    return 0
+
+
+def _handle_admin_email_set(
+    args: argparse.Namespace,
+    stdout: TextIO,
+    _stderr: TextIO,
+) -> int:
+    import os
+
+    from src.config import set_admin_email
+
+    new_email = set_admin_email(args.email)
+    print(f"ADMIN_EMAIL updated in .env: {new_email}", file=stdout)
+
+    if os.environ.get("ADMIN_EMAIL"):
+        print(
+            "Advertencia: la variable de entorno ADMIN_EMAIL esta definida y tiene "
+            "prioridad sobre .env. Quitala o actualizala para que aplique el cambio.",
+            file=stdout,
+        )
+
+    print(
+        "Reinicia los procesos de Gleipnir (live/replay/dashboard) para aplicar el cambio.",
+        file=stdout,
+    )
+    return 0
+
+
+def _handle_ips_status(
+    _args: argparse.Namespace,
+    stdout: TextIO,
+    _stderr: TextIO,
+) -> int:
+    config = _load_config()
+    settings = ips_config.build_ips_settings(config)
+    nft_available = firewall.is_nft_available()
+    print("Gleipnir IPS/Firewall status:", file=stdout)
+    print(f"- enabled: {settings.enabled}", file=stdout)
+    print(f"- backend: {settings.backend}", file=stdout)
+    print(f"- dry_run: {settings.dry_run}", file=stdout)
+    print(f"- allowlist_policy: {settings.allowlist_policy}", file=stdout)
+    print(f"- blacklist_policy: {settings.blacklist_policy}", file=stdout)
+    print(f"- block_direction: {settings.block_direction}", file=stdout)
+    print(f"- blacklist_check_private: {settings.blacklist_check_private}", file=stdout)
+    print(f"- auto_apply: {settings.auto_apply}", file=stdout)
+    print(f"- table/chain: inet {settings.table} / {settings.chain}", file=stdout)
+    print(f"- config_file: {config.ips_config_file}", file=stdout)
+    print(f"- nft_available: {nft_available}", file=stdout)
+    if not settings.enabled:
+        print(
+            "Modo IDS pasivo: no se bloquea trafico. Usa 'gleipnir ips enable' para activar IPS.",
+            file=stdout,
+        )
+    return 0
+
+
+def _handle_ips_dry_run(
+    _args: argparse.Namespace,
+    stdout: TextIO,
+    _stderr: TextIO,
+) -> int:
+    config = _load_config()
+    settings = ips_config.build_ips_settings(config)
+    whitelist_entries, blacklist_entries = _load_ips_lists(config)
+    result = firewall.dry_run_rules(whitelist_entries, blacklist_entries, settings)
+    print("IPS dry-run (no se modifica el sistema):", file=stdout)
+    for line in result.rules:
+        print(line, file=stdout)
+    return 0
+
+
+def _handle_ips_apply(
+    _args: argparse.Namespace,
+    stdout: TextIO,
+    _stderr: TextIO,
+) -> int:
+    config = _load_config()
+    settings = ips_config.build_ips_settings(config)
+    if not settings.enabled:
+        print(
+            "IPS deshabilitado. Ejecuta 'gleipnir ips enable' antes de aplicar reglas.",
+            file=stdout,
+        )
+        return 1
+    if settings.dry_run:
+        print(
+            "dry_run=true: no se aplican reglas reales. Ejecuta "
+            "'gleipnir ips dry-run-disable' (y corre con sudo/root) para aplicar.",
+            file=stdout,
+        )
+        return 1
+
+    whitelist_entries, blacklist_entries = _load_ips_lists(config)
+    result = firewall.sync_firewall_rules(whitelist_entries, blacklist_entries, settings)
+    if result.applied:
+        print(
+            f"Reglas IPS aplicadas en inet {settings.table}/{settings.chain}.",
+            file=stdout,
+        )
+        return 0
+
+    print(
+        f"No se aplicaron reglas IPS: reason={result.reason} error={result.error or ''}",
+        file=stdout,
+    )
+    if result.reason in {"nft_unavailable", "nft_rejected", "nft_error"}:
+        print(
+            "Verifica que nft este instalado y que ejecutes con sudo/root.",
+            file=stdout,
+        )
+    return 1
+
+
+def _handle_ips_remove(
+    _args: argparse.Namespace,
+    stdout: TextIO,
+    _stderr: TextIO,
+) -> int:
+    config = _load_config()
+    settings = ips_config.build_ips_settings(config)
+    result = firewall.remove_gleipnir_rules(settings)
+    if result.applied:
+        print(f"Tabla IPS de Gleipnir eliminada: inet {settings.table}.", file=stdout)
+        return 0
+    if result.reason == "table_absent":
+        print("No habia tabla IPS de Gleipnir que eliminar.", file=stdout)
+        return 0
+
+    print(
+        f"No se pudo eliminar la tabla IPS: reason={result.reason} error={result.error or ''}",
+        file=stdout,
+    )
+    if result.reason in {"nft_unavailable", "nft_rejected", "nft_error"}:
+        print("Verifica que nft este instalado y que ejecutes con sudo/root.", file=stdout)
+    return 1
+
+
+def _handle_ips_rules(
+    _args: argparse.Namespace,
+    stdout: TextIO,
+    _stderr: TextIO,
+) -> int:
+    config = _load_config()
+    settings = ips_config.build_ips_settings(config)
+    whitelist_entries, blacklist_entries = _load_ips_lists(config)
+    script = firewall.build_ruleset(whitelist_entries, blacklist_entries, settings)
+    print(script, end="", file=stdout)
+    return 0
+
+
+def _handle_ips_config_show(
+    _args: argparse.Namespace,
+    stdout: TextIO,
+    _stderr: TextIO,
+) -> int:
+    config = _load_config()
+    operational = ips_config.load_ips_config(config)
+    print(f"IPS operational config ({config.ips_config_file}):", file=stdout)
+    for key in ips_config.CONFIG_KEYS:
+        print(f"- {key}: {operational[key]}", file=stdout)
+    return 0
+
+
+def _handle_ips_config_set(
+    args: argparse.Namespace,
+    stdout: TextIO,
+    _stderr: TextIO,
+) -> int:
+    config = _load_config()
+    updated = ips_config.update_ips_config({args.key: args.value}, config)
+    print(f"IPS config updated: {args.key}={updated[args.key]}", file=stdout)
+    return 0
+
+
+def _handle_ips_enable(_args: argparse.Namespace, stdout: TextIO, _stderr: TextIO) -> int:
+    config = _load_config()
+    ips_config.update_ips_config({"ips_enabled": True}, config)
+    print(
+        "IPS habilitado en configuracion. Para aplicar reglas reales ejecuta: "
+        "sudo .venv/bin/gleipnir ips apply",
+        file=stdout,
+    )
+    return 0
+
+
+def _handle_ips_disable(_args: argparse.Namespace, stdout: TextIO, _stderr: TextIO) -> int:
+    config = _load_config()
+    ips_config.update_ips_config({"ips_enabled": False}, config)
+    print(
+        "IPS deshabilitado en configuracion. Si ya habia reglas aplicadas, ejecuta: "
+        "sudo .venv/bin/gleipnir ips remove",
+        file=stdout,
+    )
+    return 0
+
+
+def _handle_ips_dry_run_enable(_args: argparse.Namespace, stdout: TextIO, _stderr: TextIO) -> int:
+    config = _load_config()
+    ips_config.update_ips_config({"dry_run": True}, config)
+    print("dry_run habilitado: el IPS solo simula reglas, no aplica reglas reales.", file=stdout)
+    return 0
+
+
+def _handle_ips_dry_run_disable(_args: argparse.Namespace, stdout: TextIO, _stderr: TextIO) -> int:
+    config = _load_config()
+    ips_config.update_ips_config({"dry_run": False}, config)
+    print(
+        "dry_run deshabilitado. Esto permite aplicar reglas reales con 'ips apply' "
+        "si ips_enabled=true.",
+        file=stdout,
+    )
+    return 0
+
+
+def _handle_ips_policy_allowlist(args: argparse.Namespace, stdout: TextIO, _stderr: TextIO) -> int:
+    config = _load_config()
+    ips_config.update_ips_config({"allowlist_policy": args.mode}, config)
+    print(f"allowlist_policy={args.mode}", file=stdout)
+    return 0
+
+
+def _handle_ips_policy_blacklist(args: argparse.Namespace, stdout: TextIO, _stderr: TextIO) -> int:
+    config = _load_config()
+    ips_config.update_ips_config({"blacklist_policy": args.mode}, config)
+    print(f"blacklist_policy={args.mode}", file=stdout)
+    return 0
+
+
+def _handle_ips_direction(args: argparse.Namespace, stdout: TextIO, _stderr: TextIO) -> int:
+    config = _load_config()
+    ips_config.update_ips_config({"block_direction": args.mode}, config)
+    print(f"block_direction={args.mode}", file=stdout)
+    return 0
+
+
+def _handle_ips_private_check_enable(_args: argparse.Namespace, stdout: TextIO, _stderr: TextIO) -> int:
+    config = _load_config()
+    ips_config.update_ips_config({"blacklist_check_private": True}, config)
+    print("blacklist_check_private=True", file=stdout)
+    return 0
+
+
+def _handle_ips_private_check_disable(_args: argparse.Namespace, stdout: TextIO, _stderr: TextIO) -> int:
+    config = _load_config()
+    ips_config.update_ips_config({"blacklist_check_private": False}, config)
+    print("blacklist_check_private=False", file=stdout)
+    return 0
+
+
+def _handle_ips_auto_apply_enable(_args: argparse.Namespace, stdout: TextIO, _stderr: TextIO) -> int:
+    config = _load_config()
+    ips_config.update_ips_config({"auto_apply": True}, config)
+    print(
+        "auto_apply=True. Nota: aplicar reglas reales sigue requiriendo permisos "
+        "root; se recomienda usar 'sudo .venv/bin/gleipnir ips apply'.",
+        file=stdout,
+    )
+    return 0
+
+
+def _handle_ips_auto_apply_disable(_args: argparse.Namespace, stdout: TextIO, _stderr: TextIO) -> int:
+    config = _load_config()
+    ips_config.update_ips_config({"auto_apply": False}, config)
+    print("auto_apply=False", file=stdout)
+    return 0
+
+
+def _load_ips_lists(config: Any) -> tuple[tuple[Any, ...], tuple[Any, ...]]:
+    whitelist_entries: tuple[Any, ...] = ()
+    blacklist_entries: tuple[Any, ...] = ()
+    try:
+        whitelist_entries = whitelist.load_whitelist(config.whitelist_file)
+    except (OSError, whitelist.WhitelistError):
+        whitelist_entries = ()
+    try:
+        blacklist_entries = blacklist.list_blacklist_entries(config.blacklist_file)
+    except (OSError, blacklist.BlacklistError):
+        blacklist_entries = ()
+    return whitelist_entries, blacklist_entries
 
 
 def _load_config() -> Any:

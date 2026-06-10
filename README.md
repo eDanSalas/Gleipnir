@@ -79,6 +79,9 @@ Archivos base creados:
 Variables operativas principales:
 
 - `WHITELIST_FILE=data/whitelist.csv`
+- `WHITELIST_AUTH_POLICY=strict`: politica de autorizacion de dispositivos.
+  `strict` exige coincidencia IP/MAC; `ip_fallback` permite autorizar por IP
+  solo cuando la MAC no esta disponible por el tipo de captura.
 - `BLACKLIST_FILE=data/blacklist.txt`
 - `LOG_DIR=logs/`
 - `REPORT_DIR=logs/reports/`
@@ -205,7 +208,35 @@ gleipnir report --since 2026-06-01 --until 2026-06-07
 gleipnir report --source-ip 192.168.1.10
 gleipnir report --domain ejemplo.com
 gleipnir report --severity high
+gleipnir admin-email show
+gleipnir admin-email set --email nuevo-admin@example.org
+gleipnir ips status
+gleipnir ips dry-run
 ```
+
+## IPS/Firewall opcional (defensivo)
+
+Gleipnir es un **IDS pasivo** por defecto: detecta, registra y alerta, pero **no
+bloquea** trafico. De forma **opcional** puede activarse una capa de enforcement
+defensivo con `nftables` (red propia/laboratorio):
+
+```bash
+gleipnir ips status            # estado y disponibilidad de nft
+gleipnir ips config show       # configuracion operativa actual
+gleipnir ips enable            # ips_enabled=true (no aplica reglas)
+gleipnir ips dry-run           # muestra reglas SIN aplicarlas (recomendado)
+gleipnir ips policy allowlist --mode allow_registered
+gleipnir ips rules             # ruleset nftables generado
+sudo .venv/bin/gleipnir ips apply    # aplica (ips_enabled=true, dry_run=false, root)
+sudo .venv/bin/gleipnir ips remove   # borra solo la tabla inet gleipnir
+```
+
+La configuración **operativa** (enabled, dry_run, políticas, direction,
+private-check, auto_apply) vive en `data/ips_config.json` (editable por CLI o
+dashboard); `.env` solo guarda valores base (`IPS_CONFIG_FILE`, `IPS_BACKEND`,
+`IPS_TABLE`, `IPS_CHAIN`). También se administra desde el dashboard en
+`/admin/ips` (solo rol admin; no edita `.env` ni pide contraseñas sudo). Detalle
+completo en [docs/ips_firewall.md](docs/ips_firewall.md).
 
 ## Dashboard Web
 
@@ -526,11 +557,18 @@ gleipnir whitelist remove --ip 192.168.1.10
 gleipnir whitelist validate
 ```
 
+La whitelist usa el formato CSV `ip,mac,description`. `gleipnir whitelist
+validate` rechaza IP duplicada, MAC duplicada, una misma IP con distintas MAC o
+una misma MAC asociada a distintas IPs. Por defecto `WHITELIST_AUTH_POLICY` usa
+`strict`: un equipo queda autorizado solo si el par IP/MAC coincide. En
+`ip_fallback`, Gleipnir puede autorizar por IP cuando la captura no incluye MAC;
+si IP y MAC estan disponibles, ambas deben coincidir.
+
 Blacklist:
 
 ```bash
 gleipnir blacklist list
-gleipnir blacklist add --ip 8.8.8.8 --reason "IP externa reportada como peligrosa"
+gleipnir blacklist add --ip 8.8.8.8 --reason "Botnet"
 gleipnir blacklist remove --ip 8.8.8.8
 gleipnir blacklist validate
 ```
@@ -549,5 +587,7 @@ gleipnir blacklist validate
   Nginx o Caddy como reverse proxy.
 - `docs/security.md`: medidas de seguridad del dashboard, riesgos mitigados y
   checklist de despliegue seguro.
+- `docs/ips_firewall.md`: capa opcional IPS/Firewall defensiva con nftables
+  (IDS vs IPS, dry-run, comandos y limitaciones).
 - `docs/troubleshooting.md`: diagnosticos puntuales, incluido el caso en que
   Scapy entrega paquetes live como `Raw`.

@@ -12,6 +12,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from src import cli
+from src.firewall import FirewallResult
 from src.dashboard.auth import (
     authenticate_dashboard_user,
     create_dashboard_user,
@@ -1029,6 +1030,238 @@ class CliTests(unittest.TestCase):
             self.assertIn("600", stdout.getvalue())
             self.assertNotIn("password_hash", stdout.getvalue())
 
+    def test_admin_email_show_prints_configured_email(self) -> None:
+        stdout = io.StringIO()
+        config = SimpleNamespace(admin_email="admin@example.org")
+
+        with patch("src.cli._load_config", return_value=config):
+            exit_code = cli.main(
+                ["admin-email", "show"],
+                stdout=stdout,
+                stderr=io.StringIO(),
+            )
+
+        self.assertEqual(exit_code, 0)
+        self.assertIn("admin@example.org", stdout.getvalue())
+
+    def test_admin_email_set_updates_env(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            env_file = Path(temp_dir) / ".env"
+            env_file.write_text(
+                "SMTP_HOST=smtp.example.org\nADMIN_EMAIL=old@example.org\n",
+                encoding="utf-8",
+            )
+            stdout = io.StringIO()
+
+            with patch("src.config.set_admin_email") as set_admin_email:
+                set_admin_email.return_value = "new@example.org"
+                with patch.dict("os.environ", {}, clear=True):
+                    exit_code = cli.main(
+                        ["admin-email", "set", "--email", "new@example.org"],
+                        stdout=stdout,
+                        stderr=io.StringIO(),
+                    )
+
+        self.assertEqual(exit_code, 0)
+        set_admin_email.assert_called_once_with("new@example.org")
+        self.assertIn("new@example.org", stdout.getvalue())
+
+    def test_admin_email_set_rejects_invalid_email(self) -> None:
+        stderr = io.StringIO()
+
+        exit_code = cli.main(
+            ["admin-email", "set", "--email", "not-an-email"],
+            stdout=io.StringIO(),
+            stderr=stderr,
+        )
+
+        self.assertEqual(exit_code, 1)
+        self.assertIn("Invalid email address", stderr.getvalue())
+
+    def test_ips_status_reports_configuration(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            stdout = io.StringIO()
+            config = _ips_config(Path(temp_dir), ips_enabled=False, dry_run=True)
+
+            with patch("src.cli._load_config", return_value=config):
+                with patch("src.firewall.is_nft_available", return_value=False):
+                    exit_code = cli.main(["ips", "status"], stdout=stdout, stderr=io.StringIO())
+
+        output = stdout.getvalue()
+        self.assertEqual(exit_code, 0)
+        self.assertIn("enabled: False", output)
+        self.assertIn("backend: nftables", output)
+        self.assertIn("dry_run: True", output)
+        self.assertIn("auto_apply: False", output)
+        self.assertIn("nft_available: False", output)
+        self.assertIn("Modo IDS pasivo", output)
+
+    def test_ips_dry_run_prints_rules_without_applying(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            stdout = io.StringIO()
+            config = _ips_config(Path(temp_dir), ips_enabled=True, dry_run=True)
+
+            with patch("src.cli._load_config", return_value=config):
+                with patch("src.firewall.apply_rules") as apply_rules:
+                    exit_code = cli.main(["ips", "dry-run"], stdout=stdout, stderr=io.StringIO())
+
+        self.assertEqual(exit_code, 0)
+        self.assertIn("table inet gleipnir", stdout.getvalue())
+        apply_rules.assert_not_called()
+
+    def test_ips_apply_rejected_when_disabled(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            stdout = io.StringIO()
+            config = _ips_config(Path(temp_dir), ips_enabled=False, dry_run=False)
+
+            with patch("src.cli._load_config", return_value=config):
+                with patch("src.firewall.sync_firewall_rules") as sync:
+                    exit_code = cli.main(["ips", "apply"], stdout=stdout, stderr=io.StringIO())
+
+        self.assertEqual(exit_code, 1)
+        self.assertIn("IPS deshabilitado", stdout.getvalue())
+        sync.assert_not_called()
+
+    def test_ips_apply_rejected_when_dry_run(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            stdout = io.StringIO()
+            config = _ips_config(Path(temp_dir), ips_enabled=True, dry_run=True)
+
+            with patch("src.cli._load_config", return_value=config):
+                with patch("src.firewall.sync_firewall_rules") as sync:
+                    exit_code = cli.main(["ips", "apply"], stdout=stdout, stderr=io.StringIO())
+
+        self.assertEqual(exit_code, 1)
+        self.assertIn("dry_run=true", stdout.getvalue())
+        sync.assert_not_called()
+
+    def test_ips_apply_invokes_backend_when_active(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            stdout = io.StringIO()
+            config = _ips_config(Path(temp_dir), ips_enabled=True, dry_run=False)
+
+            with patch("src.cli._load_config", return_value=config):
+                with patch(
+                    "src.firewall.sync_firewall_rules",
+                    return_value=FirewallResult(applied=True, dry_run=False),
+                ) as sync:
+                    exit_code = cli.main(["ips", "apply"], stdout=stdout, stderr=io.StringIO())
+
+        self.assertEqual(exit_code, 0)
+        self.assertIn("Reglas IPS aplicadas", stdout.getvalue())
+        sync.assert_called_once()
+
+    def test_ips_remove_only_targets_gleipnir_table(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            stdout = io.StringIO()
+            config = _ips_config(Path(temp_dir), ips_enabled=True, dry_run=False)
+
+            with patch("src.cli._load_config", return_value=config):
+                with patch(
+                    "src.firewall.remove_gleipnir_rules",
+                    return_value=FirewallResult(applied=True, dry_run=False),
+                ) as remove:
+                    exit_code = cli.main(["ips", "remove"], stdout=stdout, stderr=io.StringIO())
+
+        self.assertEqual(exit_code, 0)
+        self.assertIn("eliminada", stdout.getvalue())
+        remove.assert_called_once()
+        settings = remove.call_args.args[0]
+        self.assertEqual(settings.table, "gleipnir")
+
+    def test_ips_config_show_lists_operational_keys(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            stdout = io.StringIO()
+            config = _ips_config(Path(temp_dir))
+
+            with patch("src.cli._load_config", return_value=config):
+                exit_code = cli.main(["ips", "config", "show"], stdout=stdout, stderr=io.StringIO())
+
+        self.assertEqual(exit_code, 0)
+        self.assertIn("ips_enabled: False", stdout.getvalue())
+        self.assertIn("dry_run: True", stdout.getvalue())
+
+    def test_ips_enable_sets_flag_true(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            stdout = io.StringIO()
+            config = _ips_config(Path(temp_dir), ips_enabled=False)
+
+            with patch("src.cli._load_config", return_value=config):
+                exit_code = cli.main(["ips", "enable"], stdout=stdout, stderr=io.StringIO())
+
+            from src.ips_config import load_ips_config
+
+            self.assertEqual(exit_code, 0)
+            self.assertIn("IPS habilitado", stdout.getvalue())
+            self.assertIn("sudo .venv/bin/gleipnir ips apply", stdout.getvalue())
+            self.assertTrue(load_ips_config(config)["ips_enabled"])
+
+    def test_ips_disable_sets_flag_false(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            stdout = io.StringIO()
+            config = _ips_config(Path(temp_dir), ips_enabled=True)
+
+            with patch("src.cli._load_config", return_value=config):
+                exit_code = cli.main(["ips", "disable"], stdout=stdout, stderr=io.StringIO())
+
+            from src.ips_config import load_ips_config
+
+            self.assertEqual(exit_code, 0)
+            self.assertIn("ips remove", stdout.getvalue())
+            self.assertFalse(load_ips_config(config)["ips_enabled"])
+
+    def test_ips_dry_run_enable_and_disable(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            config = _ips_config(Path(temp_dir), dry_run=False)
+            from src.ips_config import load_ips_config
+
+            with patch("src.cli._load_config", return_value=config):
+                cli.main(["ips", "dry-run-enable"], stdout=io.StringIO(), stderr=io.StringIO())
+                self.assertTrue(load_ips_config(config)["dry_run"])
+                stdout = io.StringIO()
+                cli.main(["ips", "dry-run-disable"], stdout=stdout, stderr=io.StringIO())
+                self.assertFalse(load_ips_config(config)["dry_run"])
+                self.assertIn("reglas reales", stdout.getvalue())
+
+    def test_ips_policy_allowlist_saved(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            config = _ips_config(Path(temp_dir))
+            from src.ips_config import load_ips_config
+
+            with patch("src.cli._load_config", return_value=config):
+                exit_code = cli.main(
+                    ["ips", "policy", "allowlist", "--mode", "block_unregistered"],
+                    stdout=io.StringIO(),
+                    stderr=io.StringIO(),
+                )
+
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(load_ips_config(config)["allowlist_policy"], "block_unregistered")
+
+    def test_ips_policy_blacklist_rejects_invalid_mode(self) -> None:
+        # argparse choices reject the invalid value with SystemExit(2).
+        with self.assertRaises(SystemExit) as ctx:
+            cli.main(
+                ["ips", "policy", "blacklist", "--mode", "nuke"],
+                stdout=io.StringIO(),
+                stderr=io.StringIO(),
+            )
+        self.assertEqual(ctx.exception.code, 2)
+
+    def test_ips_direction_saved(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            config = _ips_config(Path(temp_dir))
+            from src.ips_config import load_ips_config
+
+            with patch("src.cli._load_config", return_value=config):
+                cli.main(
+                    ["ips", "direction", "--mode", "inbound"],
+                    stdout=io.StringIO(),
+                    stderr=io.StringIO(),
+                )
+
+            self.assertEqual(load_ips_config(config)["block_direction"], "inbound")
+
     @staticmethod
     def _temp_config():
         from tempfile import TemporaryDirectory
@@ -1049,6 +1282,24 @@ class CliTests(unittest.TestCase):
                 self._temp_dir.cleanup()
 
         return TempConfigContext()
+
+
+def _ips_config(root: Path, **operational) -> SimpleNamespace:
+    """Write an operational ips_config.json and return a matching config namespace."""
+    from src.ips_config import get_default_ips_config
+
+    config = get_default_ips_config()
+    config.update(operational)
+    config_path = root / "ips_config.json"
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+    return SimpleNamespace(
+        ips_backend="nftables",
+        ips_table="gleipnir",
+        ips_chain="gleipnir_filter",
+        ips_config_file=config_path,
+        whitelist_file=root / "whitelist.csv",
+        blacklist_file=root / "blacklist.txt",
+    )
 
 
 if __name__ == "__main__":

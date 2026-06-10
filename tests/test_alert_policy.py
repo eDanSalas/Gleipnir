@@ -46,7 +46,7 @@ class AlertPolicyTests(unittest.TestCase):
         self.assertFalse(second.suppressed)
         self.assertEqual(send_alert.call_count, 2)
 
-    def test_max_per_minute_suppresses_extra_alerts(self) -> None:
+    def test_max_per_minute_suppresses_repeated_extra_alerts(self) -> None:
         clock = _Clock(2000.0)
         policy = AlertPolicy(cooldown_seconds=0, max_per_minute=2, clock=clock)
         send_alert = Mock()
@@ -56,13 +56,28 @@ class AlertPolicyTests(unittest.TestCase):
         clock.value = 2010.0
         second = sender(*_unauthorized_email(source_ip="192.168.1.11"))
         clock.value = 2020.0
-        third = sender(*_unauthorized_email(source_ip="192.168.1.12"))
+        third = sender(*_unauthorized_email(source_ip="192.168.1.10"))
 
         self.assertTrue(first.sent)
         self.assertTrue(second.sent)
         self.assertFalse(third.sent)
         self.assertTrue(third.suppressed)
         self.assertEqual(third.reason, "rate_limit")
+        self.assertEqual(send_alert.call_count, 2)
+
+    def test_first_unique_event_is_not_suppressed_by_global_rate_limit(self) -> None:
+        clock = _Clock(2500.0)
+        policy = AlertPolicy(cooldown_seconds=0, max_per_minute=1, clock=clock)
+        send_alert = Mock()
+        sender = PolicyAlertSender(policy=policy, send_alert=send_alert)
+
+        first = sender(*_unauthorized_email(source_ip="192.168.1.10"))
+        clock.value = 2510.0
+        second = sender(*_unauthorized_email(source_ip="192.168.1.11"))
+
+        self.assertTrue(first.sent)
+        self.assertTrue(second.sent)
+        self.assertFalse(second.suppressed)
         self.assertEqual(send_alert.call_count, 2)
 
     def test_critical_severity_bypasses_cooldown_and_rate_limit(self) -> None:
@@ -139,7 +154,10 @@ def _unauthorized_email(
 
 
 def _blacklisted_email():
-    subject = "Gleipnir IDS: BLACKLISTED_EXTERNAL_IP"
+    subject = (
+        "Gleipnir IDS: ALERTA DE EMERGENCIA - IP peligrosa detectada - "
+        "BLACKLISTED_EXTERNAL_IP"
+    )
     body = (
         "Se detecto trafico hacia una IP externa en blacklist.\n\n"
         "Resumen:\n"
