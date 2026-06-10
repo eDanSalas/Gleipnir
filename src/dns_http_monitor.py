@@ -1,8 +1,3 @@
-"""Offline DNS and HTTP traffic registration.
-
-The monitor consumes PacketEvent objects or synthetic packet mappings. It does
-not capture live traffic and does not query external threat intelligence.
-"""
 
 from __future__ import annotations
 
@@ -23,7 +18,6 @@ _LOGGER.addHandler(logging.NullHandler())
 
 @dataclass(frozen=True)
 class DNSTrafficEvent:
-    """DNS query metadata observed from an offline packet."""
 
     timestamp: float
     ip_origen: str
@@ -34,7 +28,6 @@ class DNSTrafficEvent:
 
 @dataclass(frozen=True)
 class HTTPTrafficEvent:
-    """HTTP request metadata observed from an offline packet."""
 
     timestamp: float
     ip_origen: str
@@ -47,8 +40,8 @@ class HTTPTrafficEvent:
 TrafficEvent: TypeAlias = DNSTrafficEvent | HTTPTrafficEvent
 
 
+# FUN-053
 def register_traffic(packet: Any) -> tuple[TrafficEvent, ...]:
-    """Detect and log DNS/HTTP metadata from one offline packet."""
     packet_event, metadata = _coerce_packet(packet)
     events: list[TrafficEvent] = []
 
@@ -82,14 +75,14 @@ def register_traffic(packet: Any) -> tuple[TrafficEvent, ...]:
     return tuple(events)
 
 
+# FUN-054
 def detect_dns(packet: Any) -> DNSTrafficEvent | None:
-    """Return DNS metadata when a DNS query is present."""
     packet_event, metadata = _coerce_packet(packet)
     return _build_dns_event(packet_event, metadata)
 
 
+# FUN-055
 def detect_http(packet: Any) -> HTTPTrafficEvent | None:
-    """Return HTTP metadata when an HTTP request is present."""
     packet_event, metadata = _coerce_packet(packet)
     return _build_http_event(packet_event, metadata)
 

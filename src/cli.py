@@ -1,4 +1,3 @@
-"""Command line interface for Gleipnir IDS."""
 
 from __future__ import annotations
 
@@ -42,13 +41,13 @@ LAN_DASHBOARD_WARNING = (
 )
 
 
+# FUN-017
 def main(
     argv: Sequence[str] | None = None,
     *,
     stdout: TextIO | None = None,
     stderr: TextIO | None = None,
 ) -> int:
-    """Run the Gleipnir command line interface."""
     out = stdout or sys.stdout
     err = stderr or sys.stderr
     parser = build_parser()
@@ -61,8 +60,8 @@ def main(
         return 1
 
 
+# FUN-018
 def build_parser() -> argparse.ArgumentParser:
-    """Build the CLI parser and subcommands."""
     parser = argparse.ArgumentParser(
         prog="gleipnir",
         description="Gleipnir IDS institutional defensive CLI.",

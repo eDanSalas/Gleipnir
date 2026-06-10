@@ -1,4 +1,3 @@
-"""Unit tests for offline DNS and HTTP traffic registration."""
 
 from __future__ import annotations
 

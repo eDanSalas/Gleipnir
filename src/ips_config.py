@@ -1,17 +1,3 @@
-"""Operational IPS/Firewall configuration stored in an editable JSON file.
-
-Design split:
-- ``.env`` holds only base values, paths and secrets (IPS_CONFIG_FILE,
-  IPS_BACKEND, IPS_TABLE, IPS_CHAIN).
-- ``data/ips_config.json`` holds the *operational* IPS behaviour that the user
-  changes from the CLI or dashboard. This module is the single source of truth
-  for that operational config.
-
-Safety:
-- Created with safe defaults (passive IDS, dry-run on, auto_apply off).
-- No secrets are ever stored here.
-- ``.env`` is never modified by this module.
-"""
 
 from __future__ import annotations
 
@@ -50,16 +36,16 @@ CONFIG_KEYS = tuple(_DEFAULTS)
 
 
 class IpsConfigError(ValueError):
-    """Raised when IPS operational configuration is invalid or unreadable."""
+    pass
 
 
+# FUN-068
 def get_default_ips_config() -> dict[str, Any]:
-    """Return a copy of the safe default operational configuration."""
     return dict(_DEFAULTS)
 
 
+# FUN-069
 def coerce_value(key: str, value: Any) -> Any:
-    """Coerce a raw (possibly string) value to the proper type for ``key``."""
     if key not in _DEFAULTS:
         raise IpsConfigError(f"Unknown IPS config key: {key}")
 
@@ -69,15 +55,12 @@ def coerce_value(key: str, value: Any) -> Any:
     return str(value).strip().lower()
 
 
+# FUN-070
 def validate_ips_config(config: Mapping[str, Any]) -> dict[str, Any]:
-    """Validate a full or partial config and return a complete normalized dict.
-
-    Unknown keys and invalid values are rejected. Missing keys are filled with
-    safe defaults so a partial file still loads with predictable behaviour.
-    """
     if not isinstance(config, Mapping):
         raise IpsConfigError("IPS config must be a JSON object")
 
+    # EXP-018
     unknown = [key for key in config if key not in _DEFAULTS]
     if unknown:
         raise IpsConfigError(f"Unknown IPS config keys: {', '.join(sorted(unknown))}")
@@ -93,8 +76,8 @@ def validate_ips_config(config: Mapping[str, Any]) -> dict[str, Any]:
     return result
 
 
+# FUN-071
 def load_ips_config(config_or_path: Any) -> dict[str, Any]:
-    """Load operational IPS config, creating it with safe defaults if missing."""
     path = _resolve_path(config_or_path)
     if not path.exists():
         defaults = get_default_ips_config()
@@ -112,15 +95,15 @@ def load_ips_config(config_or_path: Any) -> dict[str, Any]:
     return validate_ips_config(raw)
 
 
+# FUN-072
 def save_ips_config(config: Mapping[str, Any], config_or_path: Any) -> dict[str, Any]:
-    """Validate and persist the operational IPS config atomically."""
     validated = validate_ips_config(config)
     _write_config(_resolve_path(config_or_path), validated)
     return validated
 
 
+# FUN-073
 def update_ips_config(changes: Mapping[str, Any], config_or_path: Any) -> dict[str, Any]:
-    """Apply ``changes`` to the stored config and persist the result."""
     if not isinstance(changes, Mapping) or not changes:
         raise IpsConfigError("No IPS config changes provided")
 
@@ -133,13 +116,13 @@ def update_ips_config(changes: Mapping[str, Any], config_or_path: Any) -> dict[s
     return save_ips_config(merged, config_or_path)
 
 
+# FUN-074
 def is_ips_effectively_active(config: Mapping[str, Any]) -> bool:
-    """Return True only when real rules may be applied (enabled and not dry-run)."""
     return bool(config.get("ips_enabled")) and not bool(config.get("dry_run"))
 
 
+# FUN-075
 def build_ips_settings(runtime_config: Any) -> Any:
-    """Merge base config (.env) with operational JSON into firewall IPSSettings."""
     from src import firewall
 
     operational = load_ips_config(runtime_config)

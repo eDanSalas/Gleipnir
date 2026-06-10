@@ -1,4 +1,3 @@
-"""Unit tests for the offline sniffer."""
 
 from __future__ import annotations
 

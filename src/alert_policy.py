@@ -1,4 +1,3 @@
-"""Alert throttling policies for Gleipnir IDS."""
 
 from __future__ import annotations
 
@@ -30,7 +29,6 @@ _FIELD_PATTERN = re.compile(r"(?im)^\s*-\s*(?P<name>[^:]+):\s*(?P<value>.+?)\s*$
 
 @dataclass(frozen=True)
 class AlertRequest:
-    """Alert metadata evaluated before sending email."""
 
     subject: str
     message: str
@@ -43,7 +41,6 @@ class AlertRequest:
 
 @dataclass(frozen=True)
 class AlertDecision:
-    """Decision returned by an alert policy."""
 
     sent: bool
     suppressed: bool
@@ -54,8 +51,8 @@ class AlertDecision:
 
 
 class AlertPolicy:
-    """Apply cooldown and rate-limit rules before an alert is sent."""
 
+    # FUN-001
     def __init__(
         self,
         *,
@@ -74,9 +71,9 @@ class AlertPolicy:
         self._last_sent_by_key: dict[str, float] = {}
         self._sent_timestamps: deque[float] = deque()
 
+    # FUN-002
     @classmethod
     def from_config(cls, config: Any) -> "AlertPolicy":
-        """Build an alert policy from runtime configuration."""
         return cls(
             cooldown_seconds=int(
                 getattr(config, "alert_cooldown_seconds", DEFAULT_ALERT_COOLDOWN_SECONDS)
@@ -86,11 +83,12 @@ class AlertPolicy:
             ),
         )
 
+    # FUN-003
     def evaluate(self, request: AlertRequest) -> AlertDecision:
-        """Return whether the request can be sent now."""
         now = request.timestamp if request.timestamp is not None else self._clock()
         severity = normalize_severity(request.severity)
 
+        # EXP-017
         if severity == SEVERITY_CRITICAL:
             self._record_sent(request.group_key, now)
             return AlertDecision(
@@ -157,8 +155,8 @@ class AlertPolicy:
 
 
 class PolicyAlertSender:
-    """Callable alert sender that evaluates a policy before SMTP delivery."""
 
+    # FUN-004
     def __init__(
         self,
         *,
@@ -168,6 +166,7 @@ class PolicyAlertSender:
         self._policy = policy
         self._send_alert = send_alert
 
+    # FUN-005
     def __call__(self, subject: str, message: str, recipient: str) -> AlertDecision:
         request = build_alert_request(subject, message, recipient)
         decision = self._policy.evaluate(request)
@@ -189,8 +188,8 @@ class PolicyAlertSender:
         return decision
 
 
+# FUN-006
 def build_alert_request(subject: str, message: str, recipient: str) -> AlertRequest:
-    """Build an alert request from the existing detector email payload."""
     event_type = _event_type_from_subject(subject)
     fields = _extract_message_fields(message)
     severity = _severity_for_event(event_type, fields)
@@ -206,8 +205,8 @@ def build_alert_request(subject: str, message: str, recipient: str) -> AlertRequ
     )
 
 
+# FUN-007
 def normalize_severity(value: str | None) -> str:
-    """Normalize severity labels to low, medium, high, or critical."""
     normalized = (value or SEVERITY_MEDIUM).strip().lower()
     aliases = {
         "baja": SEVERITY_LOW,

@@ -1,4 +1,3 @@
-"""Unit tests for SQLite IDS event storage."""
 
 from __future__ import annotations
 

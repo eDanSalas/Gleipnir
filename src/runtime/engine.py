@@ -1,4 +1,3 @@
-"""Central runtime orchestration for Gleipnir IDS."""
 
 from __future__ import annotations
 
@@ -48,12 +47,11 @@ ThreatIntelEnricher = Callable[..., BlacklistedExternalIPEvent]
 
 
 class RuntimeEngineError(RuntimeError):
-    """Raised when the IDS runtime cannot be initialized or executed."""
+    pass
 
 
 @dataclass(frozen=True)
 class PacketProcessingResult:
-    """Events produced while processing one PacketEvent."""
 
     packet: PacketEvent
     detection_event: DetectionEvent
@@ -64,8 +62,8 @@ class PacketProcessingResult:
 
 
 class IDSEngine:
-    """Coordinate configuration, lists, detection, alerting, and enrichment."""
 
+    # FUN-096
     def __init__(
         self,
         *,
@@ -102,6 +100,7 @@ class IDSEngine:
         )
         self._shutdown = False
 
+    # FUN-097
     @classmethod
     def from_config(
         cls,
@@ -120,7 +119,6 @@ class IDSEngine:
         ips_settings: IPSSettings | None = None,
         firewall_block: FirewallBlocker | None = None,
     ) -> "IDSEngine":
-        """Build an engine from validated configuration and configured lists."""
         runtime_config = config or load_config(env_file)
         logger = setup_logging(runtime_config, console_stream=console_stream)
         engine_logger = get_logger("runtime.engine")
@@ -187,13 +185,13 @@ class IDSEngine:
             auth_policy=runtime_config.whitelist_auth_policy,
         )
 
+    # FUN-098
     def process_packet_event(
         self,
         event: PacketEvent,
         *,
         dns_http_source: Any | None = None,
     ) -> PacketProcessingResult:
-        """Run the central IDS flow for one normalized packet event."""
         self._ensure_running()
         detection_event = self._device_detector.analyze(event)
         dns_http_events = self.process_dns_http_event(
@@ -236,7 +234,6 @@ class IDSEngine:
         detection_event: DetectionEvent,
         blacklist_event: BlacklistedExternalIPEvent | None,
     ) -> tuple[tuple[IPSActionEvent, ...], BlacklistedExternalIPEvent | None]:
-        """Apply optional defensive enforcement. No-op unless IPS is enabled."""
         settings = self._ips_settings
         if not settings.enabled:
             return (), blacklist_event
@@ -277,8 +274,7 @@ class IDSEngine:
         detection_event: DetectionEvent,
     ) -> IPSActionEvent | None:
         packet = detection_event.packet
-        # Never auto-block when the MAC is unavailable under the strict policy:
-        # we only have a partial identity, so we alert instead of blocking.
+        # EXP-006
         if packet.mac_origen is None and self._auth_policy == whitelist.AUTH_POLICY_STRICT:
             get_logger("runtime.engine").info(
                 "IPS skip unregistered block: MAC unavailable under strict policy ip=%s",
@@ -325,6 +321,7 @@ class IDSEngine:
         timestamp: float,
     ) -> IPSActionEvent:
         settings = self._ips_settings
+        # EXP-007
         if settings.dry_run:
             get_logger("runtime.engine").info(
                 "IPS dry-run block: type=%s ip=%s direction=%s",
@@ -349,7 +346,7 @@ class IDSEngine:
 
         try:
             result = self._firewall_block(ip, direccion)
-        except Exception as exc:  # pragma: no cover - defensive
+        except Exception as exc:
             get_logger("runtime.engine").error("IPS block failed: ip=%s error=%s", ip, exc)
             result = FirewallResult(applied=False, dry_run=False, reason="engine_error", error=str(exc))
 
@@ -386,13 +383,13 @@ class IDSEngine:
             return direccion == DIRECTION_INBOUND
         return True
 
+    # FUN-099
     def process_dns_http_event(self, event: Any) -> tuple[TrafficEvent, ...]:
-        """Run DNS/HTTP detection for a PacketEvent, mapping, or Scapy packet."""
         self._ensure_running()
         return self._traffic_monitor(event)
 
+    # FUN-100
     def shutdown(self) -> None:
-        """Flush runtime logs and mark the engine as stopped."""
         if self._shutdown:
             return
 

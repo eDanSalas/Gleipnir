@@ -1,4 +1,3 @@
-"""Tests for dashboard users backed by password hashes."""
 
 from __future__ import annotations
 

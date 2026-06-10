@@ -1,4 +1,3 @@
-"""SMTP alert delivery for Gleipnir IDS."""
 
 from __future__ import annotations
 
@@ -12,11 +11,11 @@ DEFAULT_SMTP_TIMEOUT = 10
 
 
 class MailerError(RuntimeError):
-    """Raised when an alert email cannot be prepared or sent."""
+    pass
 
 
+# FUN-082
 def send_alert(subject: str, message: str, recipient: str) -> None:
-    """Send an alert email using SMTP/TLS configuration from config.py."""
     config = _load_runtime_config()
     _send_alert_with_config(config, subject, message, recipient)
 
@@ -43,6 +42,7 @@ def _send_alert_with_config(
             config.smtp_port,
             timeout=DEFAULT_SMTP_TIMEOUT,
         ) as smtp:
+            # EXP-014
             smtp.starttls(context=context)
             smtp.login(config.smtp_user, config.smtp_password)
             smtp.send_message(email)

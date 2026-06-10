@@ -1,4 +1,3 @@
-"""Secure configuration loading for Gleipnir IDS."""
 
 from __future__ import annotations
 
@@ -26,12 +25,11 @@ REQUIRED_ENV_VARS = (
 
 
 class ConfigError(ValueError):
-    """Raised when the project configuration is missing or invalid."""
+    pass
 
 
 @dataclass(frozen=True)
 class Config:
-    """Validated runtime configuration loaded from environment variables."""
 
     smtp_host: str
     smtp_port: int
@@ -88,8 +86,8 @@ class Config:
     dashboard_login_lockout_seconds: int = 300
     deprecated_dashboard_env_vars: tuple[str, ...] = ()
 
+    # FUN-019
     def as_redacted_dict(self) -> dict[str, str | int | float | None]:
-        """Return a safe representation for diagnostics without secrets."""
         return {
             "smtp_host": self.smtp_host,
             "smtp_port": self.smtp_port,
@@ -146,15 +144,11 @@ class Config:
         }
 
 
+# FUN-020
 def load_config(
     env_file: str | Path = ".env",
     environ: Mapping[str, str] | None = None,
 ) -> Config:
-    """Load and validate configuration from a .env file and environment.
-
-    Values from the process environment override values read from the .env file.
-    The optional ``environ`` parameter is intended for tests.
-    """
     env_values = _read_env_file(Path(env_file))
     runtime_env = os.environ if environ is None else environ
     values = {**env_values, **runtime_env}
@@ -453,8 +447,8 @@ def _optional_choice(
     return normalized
 
 
+# FUN-021
 def validate_email(value: str) -> str:
-    """Validate an email address and return it trimmed."""
     cleaned = (value or "").strip()
     if not EMAIL_PATTERN.match(cleaned):
         raise ConfigError(f"Invalid email address: {value}")
@@ -462,12 +456,8 @@ def validate_email(value: str) -> str:
     return cleaned
 
 
+# FUN-022
 def set_env_value(env_file: str | Path, key: str, value: str) -> None:
-    """Insert or update ``KEY=value`` in a .env file, preserving other lines.
-
-    Comments, blank lines, and unrelated variables are kept intact. The first
-    matching assignment is replaced; if the key is absent it is appended.
-    """
     path = Path(env_file)
     lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
     new_line = f"{key}={value}"
@@ -489,13 +479,8 @@ def set_env_value(env_file: str | Path, key: str, value: str) -> None:
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+# FUN-023
 def set_admin_email(email: str, env_file: str | Path = ".env") -> str:
-    """Validate and persist ``ADMIN_EMAIL`` into the .env file.
-
-    Returns the normalized email that was written. The change takes effect the
-    next time configuration is loaded (restart running live/replay/dashboard
-    processes). A process environment ``ADMIN_EMAIL`` still overrides the file.
-    """
     normalized = validate_email(email)
     set_env_value(env_file, "ADMIN_EMAIL", normalized)
     return normalized

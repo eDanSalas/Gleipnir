@@ -1,7 +1,3 @@
-"""Unit tests for the optional defensive IPS/firewall layer.
-
-These tests never invoke a real ``nft`` binary; the command runner is mocked.
-"""
 
 from __future__ import annotations
 
@@ -34,9 +30,6 @@ def _entry(ip: str, mac: str | None = None) -> SimpleNamespace:
     return SimpleNamespace(ip=ip, mac=mac)
 
 
-# --------------------------------------------------------------------------- #
-# Availability
-# --------------------------------------------------------------------------- #
 def test_is_nft_available_true_when_runner_succeeds() -> None:
     assert firewall.is_nft_available(_ok_runner(0)) is True
 
@@ -52,9 +45,6 @@ def test_is_nft_available_false_on_nonzero() -> None:
     assert firewall.is_nft_available(_ok_runner(1)) is False
 
 
-# --------------------------------------------------------------------------- #
-# Rule generation
-# --------------------------------------------------------------------------- #
 def test_build_blacklist_rules_both_directions() -> None:
     settings = IPSSettings(blacklist_policy=BLACKLIST_BLOCK, block_direction=DIRECTION_BOTH)
     rules = firewall.build_blacklist_rules(["203.0.113.50"], settings)
@@ -129,13 +119,9 @@ def test_build_ruleset_creates_own_table_and_chain() -> None:
     assert "hook forward" in script
     assert "203.0.113.50" in script
     assert "192.168.1.10" in script
-    # Never a global flush.
     assert "flush ruleset" not in script
 
 
-# --------------------------------------------------------------------------- #
-# Apply / remove / block
-# --------------------------------------------------------------------------- #
 def test_apply_rules_disabled_does_not_run() -> None:
     settings = IPSSettings(enabled=False, dry_run=True)
     runner = _ok_runner()
@@ -162,7 +148,6 @@ def test_apply_rules_active_calls_backend() -> None:
     result = firewall.apply_rules("table inet gleipnir {}", settings, runner=runner)
 
     assert result.applied is True
-    # First call is the availability check, second is the apply.
     apply_call = runner.calls[-1]
     assert apply_call[0] == ["nft", "-f", "-"]
     assert apply_call[1].get("input") == "table inet gleipnir {}"
@@ -187,7 +172,7 @@ def test_apply_rules_error_does_not_raise() -> None:
     def run(args, **kwargs):
         calls["n"] += 1
         if calls["n"] == 1:
-            return SimpleNamespace(returncode=0, stdout="", stderr="")  # availability
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
         raise RuntimeError("boom")
 
     result = firewall.apply_rules("table inet gleipnir {}", settings, runner=run)
@@ -210,7 +195,6 @@ def test_remove_gleipnir_rules_absent_table_is_benign() -> None:
     settings = IPSSettings(enabled=True, dry_run=False)
 
     def run(args, **kwargs):
-        # Availability check (nft --version) succeeds; the delete reports absence.
         if "--version" in args:
             return SimpleNamespace(returncode=0, stdout="nftables", stderr="")
         return SimpleNamespace(returncode=1, stdout="", stderr="No such file or directory")

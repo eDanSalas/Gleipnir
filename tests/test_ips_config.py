@@ -1,4 +1,3 @@
-"""Tests for the operational IPS configuration module (data/ips_config.json)."""
 
 from __future__ import annotations
 
@@ -35,7 +34,7 @@ def test_load_creates_file_with_safe_defaults_when_missing(tmp_path: Path) -> No
 def test_validate_fills_defaults_for_partial_config() -> None:
     result = validate_ips_config({"ips_enabled": True})
     assert result["ips_enabled"] is True
-    assert result["dry_run"] is True  # default preserved
+    assert result["dry_run"] is True
 
 
 def test_validate_rejects_unknown_keys() -> None:

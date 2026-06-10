@@ -1,4 +1,3 @@
-"""Flask dashboard for read-only Gleipnir IDS event visualization."""
 
 from __future__ import annotations
 
@@ -55,7 +54,7 @@ from src.storage import (
 
 try:
     from flask import Flask, Response, g, jsonify, redirect, request, session
-except ImportError:  # pragma: no cover - exercised only when Flask is missing.
+except ImportError:
     Flask = None
     Response = None
     g = None
@@ -99,12 +98,11 @@ SECRET_FIELD_HINTS = (
 
 
 class DashboardError(RuntimeError):
-    """Raised when the dashboard cannot be created."""
+    pass
 
 
 @dataclass(frozen=True)
 class DashboardData:
-    """Read-only dashboard payload derived from SQLite events."""
 
     database_exists: bool
     database_path: str
@@ -114,15 +112,14 @@ class DashboardData:
     filters: "DashboardFilters"
     charts: dict[str, tuple[dict[str, Any], ...]]
 
+    # FUN-024
     @property
     def total_events(self) -> int:
-        """Return total event count."""
         return self.summary["total_events"]
 
 
 @dataclass(frozen=True)
 class DashboardFilters:
-    """Filters accepted by dashboard query parameters."""
 
     event_type: str | None = None
     severity: str | None = None
@@ -136,13 +133,13 @@ class DashboardFilters:
     since_label: str | None = None
     until_label: str | None = None
 
+    # FUN-025
     @property
     def active_count(self) -> int:
-        """Return the number of active filters."""
         return sum(1 for value in self.as_payload().values() if value not in (None, ""))
 
+    # FUN-026
     def as_query_kwargs(self) -> dict[str, Any]:
-        """Return keyword arguments accepted by SQLiteEventStore.fetch_events."""
         return {
             "event_type": self.event_type,
             "severity": self.severity,
@@ -155,8 +152,8 @@ class DashboardFilters:
             "until": self.until,
         }
 
+    # FUN-027
     def as_payload(self) -> dict[str, Any]:
-        """Return JSON-safe filter labels."""
         payload = {
             "type": self.event_type,
             "severity": self.severity,
@@ -173,7 +170,6 @@ class DashboardFilters:
 
 @dataclass(frozen=True)
 class AdminListData:
-    """Data required by the administrative list management page."""
 
     whitelist_entries: tuple[whitelist.WhitelistEntry, ...]
     blacklist_entries: tuple[blacklist.BlacklistEntry, ...]
@@ -184,7 +180,6 @@ class AdminListData:
 
 @dataclass(frozen=True)
 class IPSAdminView:
-    """Read-only snapshot for the IPS admin page."""
 
     operational: dict[str, Any]
     settings: Any
@@ -193,8 +188,8 @@ class IPSAdminView:
     error: str | None = None
 
 
+# FUN-028
 def create_app(config: Any | None = None, *, event_store_factory=SQLiteEventStore) -> Any:
-    """Create the Flask dashboard application."""
     if Flask is None:
         raise DashboardError("Flask is required. Install dependencies with pip install -e .")
 
@@ -213,6 +208,7 @@ def create_app(config: Any | None = None, *, event_store_factory=SQLiteEventStor
 
     @app.before_request
     def require_dashboard_auth():
+        # EXP-008
         if request.endpoint in {"login", "logout"}:
             return None
 
@@ -390,6 +386,7 @@ def create_app(config: Any | None = None, *, event_store_factory=SQLiteEventStor
         runtime_config = app.config["GLEIPNIR_CONFIG"]
         if not _dashboard_auth_enabled(runtime_config):
             return _render_admin_unavailable_html(), 404
+        # EXP-009
         if _current_dashboard_role() != "admin":
             return _render_admin_access_denied_html(), 403
 
@@ -653,6 +650,7 @@ def _current_dashboard_username() -> str | None:
 
 
 def _safe_compare(provided: str, expected: str) -> bool:
+    # EXP-010
     return hmac.compare_digest(provided.encode("utf-8"), expected.encode("utf-8"))
 
 
@@ -852,7 +850,6 @@ def _handle_ips_config_update(config: Any, form: Mapping[str, Any]) -> dict[str,
     details = ", ".join(f"{key}:{before}->{after}" for key, (before, after) in changed.items())
     _record_ips_audit(config, ADMIN_IPS_CONFIG_CHANGED, "success", details or "sin cambios")
 
-    # Specific audit events for the most security-relevant transitions.
     if "ips_enabled" in changed:
         _record_ips_audit(
             config,
@@ -911,6 +908,7 @@ def _handle_ips_apply_request(config: Any) -> dict[str, str]:
     _record_ips_audit(config, ADMIN_IPS_APPLY_REQUESTED, "requested", "dashboard apply")
     settings = ips_config.build_ips_settings(config)
 
+    # EXP-011
     if not settings.auto_apply:
         _record_ips_audit(config, ADMIN_IPS_APPLY_FAILED, "blocked", "auto_apply=false")
         return _admin_notice(
@@ -1212,7 +1210,6 @@ def _load_event_detail(
     *,
     event_store_factory=SQLiteEventStore,
 ) -> StoredEvent | None:
-    """Load one event for the dashboard detail view."""
     db_path = Path(getattr(config, "ids_db_path", "data/gleipnir_events.db")).expanduser()
     if not db_path.exists():
         return None

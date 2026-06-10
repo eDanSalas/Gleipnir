@@ -1,4 +1,3 @@
-"""Dashboard filtering tests that do not require Flask to be installed."""
 
 from __future__ import annotations
 

@@ -1,4 +1,3 @@
-"""Device authorization detector for normalized packet events."""
 
 from __future__ import annotations
 
@@ -16,9 +15,7 @@ from src.sniffer import PacketEvent
 
 AUTHORIZED_DEVICE = "AUTHORIZED_DEVICE"
 UNAUTHORIZED_DEVICE = "UNAUTHORIZED_DEVICE"
-# Family/base event type kept for storage, reports, and dashboard compatibility.
 BLACKLISTED_EXTERNAL_IP = "BLACKLISTED_EXTERNAL_IP"
-# Directional/private classifications carried on the event for honest evidence.
 BLACKLISTED_EXTERNAL_IP_OUTBOUND = "BLACKLISTED_EXTERNAL_IP_OUTBOUND"
 BLACKLISTED_EXTERNAL_IP_INBOUND = "BLACKLISTED_EXTERNAL_IP_INBOUND"
 BLACKLISTED_PRIVATE_IP = "BLACKLISTED_PRIVATE_IP"
@@ -34,12 +31,11 @@ _LOGGER.addHandler(logging.NullHandler())
 
 
 class DetectorError(RuntimeError):
-    """Raised when detector processing fails."""
+    pass
 
 
 @dataclass(frozen=True)
 class DetectionEvent:
-    """Authorization result produced from a PacketEvent."""
 
     event_type: str
     packet: PacketEvent
@@ -54,7 +50,6 @@ class DetectionEvent:
 
 @dataclass(frozen=True)
 class BlacklistedExternalIPEvent:
-    """Threat event produced when a destination IP matches the blacklist."""
 
     event_type: str
     timestamp: float
@@ -83,8 +78,8 @@ class _AlertOutcome:
 
 
 class DeviceDetector:
-    """Compare packet source identity against the loaded whitelist."""
 
+    # FUN-047
     def __init__(
         self,
         *,
@@ -103,8 +98,8 @@ class DeviceDetector:
         self._alert_sender = alert_sender
         self._logger = _LOGGER
 
+    # FUN-048
     def analyze(self, packet: PacketEvent) -> DetectionEvent:
-        """Analyze one normalized packet event."""
         source_mac = _format_optional_mac(packet.mac_origen)
         destination_mac = _format_optional_mac(packet.mac_destino)
         if packet.mac_origen is None:
@@ -241,8 +236,8 @@ class DeviceDetector:
 
 
 class ExternalIPBlacklistDetector:
-    """Detect packets whose external destination IP is blacklisted."""
 
+    # FUN-049
     def __init__(
         self,
         *,
@@ -263,12 +258,8 @@ class ExternalIPBlacklistDetector:
         self._check_private = check_private
         self._logger = _LOGGER
 
+    # FUN-050
     def analyze(self, packet: PacketEvent) -> BlacklistedExternalIPEvent | None:
-        """Return a blacklist event when source or destination is dangerous.
-
-        Destination (outbound) is evaluated first, then source (inbound).
-        Private/local IPs are only checked when ``check_private`` is enabled.
-        """
         for candidate_ip, role in (
             (packet.ip_destino, "destination"),
             (packet.ip_origen, "source"),
@@ -289,6 +280,7 @@ class ExternalIPBlacklistDetector:
         return None
 
     def _should_check_ip(self, ip_address: str) -> bool:
+        # EXP-005
         if _is_external_ip(ip_address):
             return True
         if self._check_private:
@@ -412,13 +404,13 @@ class ExternalIPBlacklistDetector:
         return outcome
 
 
+# FUN-051
 def detect_packet(
     packet: PacketEvent,
     *,
     alert_recipient: str | None = None,
     send_email: bool = True,
 ) -> DetectionEvent:
-    """Analyze a single PacketEvent with the default detector."""
     detector = DeviceDetector(
         alert_recipient=alert_recipient,
         send_email=send_email,
@@ -426,6 +418,7 @@ def detect_packet(
     return detector.analyze(packet)
 
 
+# FUN-052
 def detect_blacklisted_external_ip(
     packet: PacketEvent,
     *,
@@ -433,7 +426,6 @@ def detect_blacklisted_external_ip(
     send_email: bool = True,
     check_private: bool = False,
 ) -> BlacklistedExternalIPEvent | None:
-    """Analyze one PacketEvent against the configured external IP blacklist."""
     detector = ExternalIPBlacklistDetector(
         alert_recipient=alert_recipient,
         send_email=send_email,
@@ -443,7 +435,6 @@ def detect_blacklisted_external_ip(
 
 
 def _classify_direction(dangerous_ip: str, role: str) -> tuple[str, str]:
-    """Return (direccion, directional_event_type) for a matched blacklist IP."""
     if not _is_external_ip(dangerous_ip):
         return DIRECTION_LOCAL, BLACKLISTED_PRIVATE_IP
     if role == "source":

@@ -1,4 +1,3 @@
-"""Unit tests for the Gleipnir logging setup."""
 
 from __future__ import annotations
 

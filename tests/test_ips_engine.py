@@ -1,4 +1,3 @@
-"""IPS enforcement integration tests for the IDS engine (no real nft)."""
 
 from __future__ import annotations
 
@@ -25,8 +24,6 @@ from src.sniffer import PacketEvent, parse_packet
 from src.storage import SQLiteEventStore
 
 
-# A genuinely global IP. Documentation ranges like 203.0.113.0/24 are NOT
-# is_global, so they would be skipped unless BLACKLIST_CHECK_PRIVATE=true.
 DANGEROUS_IP = "8.8.8.8"
 
 

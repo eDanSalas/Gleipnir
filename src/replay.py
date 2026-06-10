@@ -1,4 +1,3 @@
-"""Offline replay mode for simulated IDS processing."""
 
 from __future__ import annotations
 
@@ -23,7 +22,6 @@ _LOGGER = get_logger("replay")
 
 @dataclass(frozen=True)
 class ReplayResult:
-    """Summary of events processed during an offline replay."""
 
     packet_count: int
     detection_events: tuple[DetectionEvent, ...]
@@ -32,6 +30,7 @@ class ReplayResult:
     errors: int = 0
 
 
+# FUN-089
 def replay_pcap(
     pcap_path: str | Path,
     delay_seconds: float = 0,
@@ -41,7 +40,6 @@ def replay_pcap(
     packet_processor: PacketProcessor | None = None,
     sleep_func: SleepFunction = time.sleep,
 ) -> ReplayResult:
-    """Replay a PCAP file as simulated traffic without live capture."""
     _validate_delay(delay_seconds)
     packet_events = parse_pcap(pcap_path)
     return replay_events(
@@ -54,6 +52,7 @@ def replay_pcap(
     )
 
 
+# FUN-090
 def replay_events(
     packets: Iterable[PacketEvent | Mapping[str, Any]],
     delay_seconds: float = 0,
@@ -63,7 +62,6 @@ def replay_events(
     packet_processor: PacketProcessor | None = None,
     sleep_func: SleepFunction = time.sleep,
 ) -> ReplayResult:
-    """Replay normalized or synthetic packets through detector and monitor."""
     delay = _validate_delay(delay_seconds)
     detect = (
         None if packet_processor is not None else detector_handler or detector.detect_packet

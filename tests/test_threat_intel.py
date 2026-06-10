@@ -1,4 +1,3 @@
-"""Unit tests for threat intelligence enrichment."""
 
 from __future__ import annotations
 

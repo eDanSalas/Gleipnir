@@ -1,4 +1,3 @@
-"""Unit tests for Scapy live capture orchestration."""
 
 from __future__ import annotations
 

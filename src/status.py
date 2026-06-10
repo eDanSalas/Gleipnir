@@ -1,4 +1,3 @@
-"""Runtime health checks for Gleipnir IDS."""
 
 from __future__ import annotations
 
@@ -19,7 +18,6 @@ DEFAULT_SMTP_HEALTH_TIMEOUT = 5
 
 @dataclass(frozen=True)
 class HealthCheckItem:
-    """One status line produced by the healthcheck command."""
 
     status: str
     component: str
@@ -28,13 +26,12 @@ class HealthCheckItem:
 
 @dataclass(frozen=True)
 class HealthReport:
-    """Complete healthcheck result."""
 
     items: tuple[HealthCheckItem, ...]
 
+    # FUN-108
     @property
     def exit_code(self) -> int:
-        """Return CLI exit code: 1 when any critical error exists."""
         return 1 if any(item.status == STATUS_ERROR for item in self.items) else 0
 
 
@@ -43,13 +40,13 @@ SmtpChecker = Callable[[str, int, int], None]
 InterfaceProvider = Callable[[], Iterable[tuple[int, str]]]
 
 
+# FUN-109
 def run_healthcheck(
     *,
     config_loader: ConfigLoader | None = None,
     smtp_checker: SmtpChecker | None = None,
     interface_provider: InterfaceProvider | None = None,
 ) -> HealthReport:
-    """Check the local runtime readiness without sending email."""
     loader = config_loader or _load_runtime_config
     smtp_probe = smtp_checker or _check_smtp_availability
     interfaces = interface_provider or socket.if_nameindex
@@ -88,16 +85,16 @@ def run_healthcheck(
     return HealthReport(tuple(items))
 
 
+# FUN-110
 def format_health_report(report: HealthReport) -> str:
-    """Format healthcheck results for CLI output."""
     lines = ["Gleipnir status"]
     for item in report.items:
         lines.append(f"{item.status:<7} | {item.component:<13} | {item.message}")
     return "\n".join(lines) + "\n"
 
 
+# FUN-111
 def print_health_report(report: HealthReport, stdout: TextIO) -> None:
-    """Print a health report."""
     print(format_health_report(report), end="", file=stdout)
 
 
@@ -210,7 +207,6 @@ def _check_smtp(config: Any, smtp_checker: SmtpChecker) -> HealthCheckItem:
 
 
 def _check_smtp_availability(host: str, port: int, timeout: int) -> None:
-    """Open an SMTP session and issue NOOP without authenticating or sending mail."""
     with smtplib.SMTP(host, port, timeout=timeout) as smtp:
         smtp.noop()
 

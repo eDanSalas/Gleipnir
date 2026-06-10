@@ -1,8 +1,3 @@
-"""Logging setup for Gleipnir IDS.
-
-The logger writes to console and to a rotating log file while redacting
-sensitive values before they are emitted.
-"""
 
 from __future__ import annotations
 
@@ -23,20 +18,21 @@ REDACTED_VALUE = "[REDACTED]"
 
 
 class SecretRedactor:
-    """Redact known secret values and sensitive key assignments."""
 
     _sensitive_assignment = re.compile(
         r"(?i)(\b[\w.-]*(?:password|passwd|pwd|api[_-]?key|token|secret)"
         r"[\w.-]*\b\s*[:=]\s*)(['\"]?)[^'\"\s,;]+(['\"]?)"
     )
 
+    # FUN-076
     def __init__(self, secrets: Iterable[str | None] = ()) -> None:
         self._secrets = tuple(
             secret for secret in {item for item in secrets if item} if secret.strip()
         )
 
+    # FUN-077
     def redact(self, text: str) -> str:
-        """Return text without known secret values or secret assignments."""
+        # EXP-016
         redacted = text
 
         for secret in self._secrets:
@@ -49,8 +45,8 @@ class SecretRedactor:
 
 
 class RedactingFormatter(logging.Formatter):
-    """Formatter that redacts secrets from the final log line."""
 
+    # FUN-078
     def __init__(
         self,
         fmt: str,
@@ -60,12 +56,14 @@ class RedactingFormatter(logging.Formatter):
         super().__init__(fmt=fmt, datefmt=datefmt)
         self._redactor = redactor
 
+    # FUN-079
     def format(self, record: logging.LogRecord) -> str:
         safe_record = copy.copy(record)
         formatted = super().format(safe_record)
         return self._redactor.redact(formatted)
 
 
+# FUN-080
 def setup_logging(
     config: Any,
     *,
@@ -76,7 +74,6 @@ def setup_logging(
     backup_count: int = DEFAULT_BACKUP_COUNT,
     console_stream: TextIO | None = None,
 ) -> logging.Logger:
-    """Configure console and rotating file logging from project config."""
     log_dir = Path(config.log_dir).expanduser()
     log_dir.mkdir(parents=True, exist_ok=True)
 
@@ -110,8 +107,8 @@ def setup_logging(
     return logger
 
 
+# FUN-081
 def get_logger(module_name: str) -> logging.Logger:
-    """Return a module logger under the Gleipnir namespace."""
     return logging.getLogger(f"gleipnir.{module_name}")
 
 

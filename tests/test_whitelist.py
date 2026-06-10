@@ -1,4 +1,3 @@
-"""Unit tests for whitelist loading and authorization checks."""
 
 from __future__ import annotations
 

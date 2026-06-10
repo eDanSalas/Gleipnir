@@ -1,4 +1,3 @@
-"""Tests for secure project configuration loading."""
 
 from pathlib import Path
 
@@ -47,7 +46,6 @@ DASHBOARD_LOGIN_LOCKOUT_SECONDS=120
 
 
 def test_env_example_exists() -> None:
-    """The project should provide a safe environment template."""
     project_root = Path(__file__).resolve().parents[1]
 
     assert (project_root / ".env.example").is_file()
@@ -233,7 +231,6 @@ def test_set_env_value_updates_existing_key_and_preserves_others(tmp_path: Path)
 
     config = load_config(env_file=env_file, environ={})
     assert config.admin_email == "new-admin@example.org"
-    # Unrelated values stay intact.
     assert config.smtp_host == "smtp.example.org"
     assert config.smtp_user == "alerts@example.org"
 

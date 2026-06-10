@@ -1,4 +1,3 @@
-"""Dashboard user authentication backed by non-reversible password hashes."""
 
 from __future__ import annotations
 
@@ -28,12 +27,11 @@ COMMON_DASHBOARD_PASSWORDS = {
 
 
 class DashboardAuthError(ValueError):
-    """Raised when dashboard users cannot be loaded or validated."""
+    pass
 
 
 @dataclass(frozen=True)
 class DashboardUser:
-    """Dashboard user loaded from the local users file."""
 
     username: str
     password_hash: str = field(repr=False)
@@ -41,8 +39,8 @@ class DashboardUser:
     enabled: bool
     created_at: str
 
+    # FUN-029
     def safe_payload(self) -> dict[str, str | bool]:
-        """Return user metadata without password hash material."""
         return {
             "username": self.username,
             "role": self.role,
@@ -53,21 +51,19 @@ class DashboardUser:
 
 @dataclass(frozen=True)
 class UsersFilePermissionCheck:
-    """Permission status for the dashboard users file."""
 
     status: str
     path: Path
     message: str
 
+    # FUN-030
     @property
     def is_warning(self) -> bool:
-        """Return whether the permission check produced a warning."""
         return self.status == "WARNING"
 
 
 @dataclass(frozen=True)
 class DashboardUserMigrationResult:
-    """Result of migrating one legacy dashboard user."""
 
     username: str
     role: str
@@ -81,8 +77,8 @@ class _LoginBucket:
 
 
 class LoginAttemptTracker:
-    """In-memory login failure tracker by username and remote IP."""
 
+    # FUN-031
     def __init__(
         self,
         *,
@@ -98,12 +94,13 @@ class LoginAttemptTracker:
         self._time_provider = time_provider
         self._buckets: dict[str, _LoginBucket] = {}
 
+    # FUN-032
     def is_locked(self, username: str | None, remote_ip: str | None) -> bool:
-        """Return whether the username or remote IP is currently locked."""
+        # EXP-012
         return any(self._bucket_locked(key) for key in self._keys(username, remote_ip))
 
+    # FUN-033
     def record_failure(self, username: str | None, remote_ip: str | None) -> bool:
-        """Record a failed login and return whether it triggered lockout."""
         now = self._now()
         locked = False
         for key in self._keys(username, remote_ip):
@@ -116,8 +113,8 @@ class LoginAttemptTracker:
                 locked = True
         return locked
 
+    # FUN-034
     def record_success(self, username: str | None, remote_ip: str | None) -> None:
-        """Clear login failure counters for a successful login."""
         for key in self._keys(username, remote_ip):
             self._buckets.pop(key, None)
 
@@ -144,8 +141,8 @@ class LoginAttemptTracker:
         return float(self._time_provider())
 
 
+# FUN-035
 def hash_dashboard_password(password: str) -> str:
-    """Return a secure, non-reversible password hash for dashboard users."""
     cleaned = str(password or "")
     if not cleaned:
         raise DashboardAuthError("Dashboard password must not be empty")
@@ -153,10 +150,10 @@ def hash_dashboard_password(password: str) -> str:
     return generate_password_hash(cleaned)
 
 
+# FUN-036
 def password_strength_recommendation(
     min_length: int = MIN_DASHBOARD_PASSWORD_LENGTH,
 ) -> str:
-    """Return a short operator-facing recommendation for dashboard passwords."""
     effective_min_length = _effective_min_password_length(min_length)
     return (
         "Use a unique password or passphrase with at least "
@@ -165,13 +162,13 @@ def password_strength_recommendation(
     )
 
 
+# FUN-037
 def load_dashboard_users(users_file: str | Path) -> tuple[DashboardUser, ...]:
-    """Load and validate dashboard users from a JSON file."""
     return _load_dashboard_users(users_file, require_enabled=True)
 
 
+# FUN-038
 def list_dashboard_users(users_file: str | Path) -> tuple[DashboardUser, ...]:
-    """Return dashboard users, or an empty tuple when the file does not exist."""
     path = Path(users_file).expanduser()
     if not path.exists():
         return ()
@@ -179,8 +176,8 @@ def list_dashboard_users(users_file: str | Path) -> tuple[DashboardUser, ...]:
     return _load_dashboard_users(path, require_enabled=False)
 
 
+# FUN-039
 def check_users_file_permissions(users_file: str | Path) -> UsersFilePermissionCheck:
-    """Check whether dashboard users file permissions are safe for Ubuntu."""
     path = Path(users_file).expanduser()
     if not path.exists():
         return UsersFilePermissionCheck(
@@ -222,6 +219,7 @@ def check_users_file_permissions(users_file: str | Path) -> UsersFilePermissionC
     )
 
 
+# FUN-040
 def create_dashboard_user(
     users_file: str | Path,
     *,
@@ -230,7 +228,6 @@ def create_dashboard_user(
     role: str,
     min_password_length: int = MIN_DASHBOARD_PASSWORD_LENGTH,
 ) -> DashboardUser:
-    """Create a new dashboard user and persist only its password hash."""
     path = Path(users_file).expanduser()
     users = list(list_dashboard_users(path))
     cleaned_username = _validate_username(username)
@@ -252,6 +249,7 @@ def create_dashboard_user(
     return user
 
 
+# FUN-041
 def migrate_legacy_dashboard_user(
     users_file: str | Path,
     *,
@@ -259,7 +257,6 @@ def migrate_legacy_dashboard_user(
     password: str,
     role: str = "viewer",
 ) -> DashboardUserMigrationResult:
-    """Migrate legacy .env dashboard credentials into the users JSON file."""
     path = Path(users_file).expanduser()
     users = list(list_dashboard_users(path))
     cleaned_username = _validate_username(username)
@@ -294,16 +291,17 @@ def migrate_legacy_dashboard_user(
     )
 
 
+# FUN-042
 def enable_dashboard_user(users_file: str | Path, *, username: str) -> DashboardUser:
-    """Enable an existing dashboard user."""
     return _set_dashboard_user_enabled(users_file, username=username, enabled=True)
 
 
+# FUN-043
 def disable_dashboard_user(users_file: str | Path, *, username: str) -> DashboardUser:
-    """Disable an existing dashboard user."""
     return _set_dashboard_user_enabled(users_file, username=username, enabled=False)
 
 
+# FUN-044
 def change_dashboard_user_password(
     users_file: str | Path,
     *,
@@ -311,7 +309,6 @@ def change_dashboard_user_password(
     password: str,
     min_password_length: int = MIN_DASHBOARD_PASSWORD_LENGTH,
 ) -> DashboardUser:
-    """Change a dashboard user's password by replacing its password hash."""
     path = Path(users_file).expanduser()
     users = list(_load_dashboard_users(path, require_enabled=False))
     cleaned_username = _validate_username(username)
@@ -361,12 +358,12 @@ def _load_dashboard_users(
     return users
 
 
+# FUN-045
 def authenticate_dashboard_user(
     users_file: str | Path,
     username: str,
     password: str,
 ) -> DashboardUser | None:
-    """Return an enabled matching user when credentials are valid."""
     provided_username = str(username or "").strip()
     provided_password = str(password or "")
     if not provided_username or not provided_password:
@@ -375,6 +372,7 @@ def authenticate_dashboard_user(
     for user in load_dashboard_users(users_file):
         if not user.enabled or user.username != provided_username:
             continue
+        # EXP-013
         if check_password_hash(user.password_hash, provided_password):
             return user
 
@@ -487,12 +485,12 @@ def _validate_role(role: str) -> str:
     return cleaned
 
 
+# FUN-046
 def validate_dashboard_password_policy(
     password: str,
     *,
     min_length: int = MIN_DASHBOARD_PASSWORD_LENGTH,
 ) -> None:
-    """Validate password policy for user creation and password changes."""
     cleaned = str(password or "")
     effective_min_length = _effective_min_password_length(min_length)
     if len(cleaned) < effective_min_length:

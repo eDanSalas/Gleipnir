@@ -1,4 +1,3 @@
-"""Whitelist loading and authorization checks for IP/MAC pairs."""
 
 from __future__ import annotations
 
@@ -33,12 +32,11 @@ _AUTHORIZED_MACS: set[str] = set()
 
 
 class WhitelistError(ValueError):
-    """Raised when the whitelist file has invalid content."""
+    pass
 
 
 @dataclass(frozen=True)
 class WhitelistEntry:
-    """Single authorized IP/MAC identity."""
 
     ip: str
     mac: str
@@ -47,15 +45,14 @@ class WhitelistEntry:
 
 @dataclass(frozen=True)
 class AuthorizationResult:
-    """Decision produced by the whitelist authorization policy."""
 
     authorized: bool
     authorized_by: str | None = None
     reason: str | None = None
 
 
+# FUN-138
 def load_whitelist(file_path: str | Path = DEFAULT_WHITELIST_FILE) -> tuple[WhitelistEntry, ...]:
-    """Load authorized IP/MAC pairs from a CSV whitelist file."""
     path = Path(file_path)
     entries: list[WhitelistEntry] = []
 
@@ -71,6 +68,7 @@ def load_whitelist(file_path: str | Path = DEFAULT_WHITELIST_FILE) -> tuple[Whit
     return tuple(entries)
 
 
+# FUN-139
 def add_whitelist_entry(
     file_path: str | Path,
     *,
@@ -78,7 +76,6 @@ def add_whitelist_entry(
     mac: str,
     description: str,
 ) -> WhitelistEntry:
-    """Add an authorized IP/MAC pair to the whitelist CSV file."""
     path = Path(file_path)
     path.parent.mkdir(parents=True, exist_ok=True)
     entries = list(_read_whitelist_if_exists(path))
@@ -96,8 +93,8 @@ def add_whitelist_entry(
     return new_entry
 
 
+# FUN-140
 def remove_whitelist_entry(file_path: str | Path, *, ip: str) -> WhitelistEntry:
-    """Remove an authorized IP/MAC pair by IP address."""
     path = Path(file_path)
     normalized_ip = validate_ip(ip)
     entries = list(load_whitelist(path))
@@ -118,22 +115,23 @@ def remove_whitelist_entry(file_path: str | Path, *, ip: str) -> WhitelistEntry:
     return removed
 
 
+# FUN-141
 def validate_whitelist_file(file_path: str | Path) -> tuple[WhitelistEntry, ...]:
-    """Validate a whitelist file and reject duplicate IP or MAC identities."""
     return load_whitelist(file_path)
 
 
+# FUN-142
 def check_authorization(
     ip: str,
     mac: str | None,
     *,
     policy: str = AUTH_POLICY_STRICT,
 ) -> AuthorizationResult:
-    """Return an explicit authorization decision for one source IP/MAC identity."""
     normalized_policy = normalize_auth_policy(policy)
     normalized_ip = validate_ip(ip)
     normalized_mac = validate_mac(mac) if mac is not None else None
 
+    # EXP-004
     if normalized_mac is None:
         if normalized_policy == AUTH_POLICY_IP_FALLBACK:
             if normalized_ip in _AUTHORIZED_IPS:
@@ -176,18 +174,18 @@ def check_authorization(
     )
 
 
+# FUN-143
 def is_authorized(
     ip: str,
     mac: str | None,
     *,
     policy: str = AUTH_POLICY_STRICT,
 ) -> bool:
-    """Return whether the IP/MAC pair exists in the loaded whitelist."""
     return check_authorization(ip, mac, policy=policy).authorized
 
 
+# FUN-144
 def normalize_auth_policy(value: str | None) -> str:
-    """Validate and normalize whitelist authorization policy names."""
     normalized = (value or AUTH_POLICY_STRICT).strip().lower()
     if normalized not in AUTH_POLICIES:
         allowed = ", ".join(AUTH_POLICIES)
@@ -196,16 +194,16 @@ def normalize_auth_policy(value: str | None) -> str:
     return normalized
 
 
+# FUN-145
 def validate_ip(value: str) -> str:
-    """Validate IPv4 or IPv6 input and return a canonical string."""
     try:
         return str(ipaddress.ip_address(value.strip()))
     except ValueError as exc:
         raise WhitelistError(f"Invalid IP address: {value}") from exc
 
 
+# FUN-146
 def validate_mac(value: str) -> str:
-    """Validate a MAC address and return lowercase colon-separated form."""
     match = MAC_PATTERN.match(value.strip())
     if not match:
         raise WhitelistError(f"Invalid MAC address: {value}")

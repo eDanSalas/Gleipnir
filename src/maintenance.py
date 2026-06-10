@@ -1,4 +1,3 @@
-"""Retention maintenance for Gleipnir IDS runtime data."""
 
 from __future__ import annotations
 
@@ -18,7 +17,6 @@ REPORT_SUFFIXES = (".json", ".csv")
 
 @dataclass(frozen=True)
 class MaintenanceResult:
-    """Summary of one maintenance run."""
 
     events_deleted: int = 0
     event_retention_days: int = 30
@@ -34,19 +32,19 @@ class MaintenanceResult:
     messages: tuple[str, ...] = field(default_factory=tuple)
     errors: tuple[str, ...] = field(default_factory=tuple)
 
+    # FUN-084
     @property
     def exit_code(self) -> int:
-        """Return 1 when maintenance found an operational error."""
         return 1 if self.errors else 0
 
 
+# FUN-085
 def run_maintenance(
     config: Any,
     *,
     now: float | None = None,
     logger: Any | None = None,
 ) -> MaintenanceResult:
-    """Apply retention policies for SQLite events, reports, and logs."""
     current_time = time.time() if now is None else float(now)
     messages: list[str] = []
     errors: list[str] = []
@@ -129,12 +127,12 @@ def run_maintenance(
     )
 
 
+# FUN-086
 def cleanup_old_reports(
     report_dir: str | Path,
     *,
     max_reports_to_keep: int,
 ) -> tuple[int, int]:
-    """Keep only the newest Gleipnir report files in the report directory."""
     keep_count = _validate_positive_int(max_reports_to_keep, "max_reports_to_keep")
     directory = Path(report_dir)
     if not directory.exists():
@@ -157,8 +155,8 @@ def cleanup_old_reports(
     return deleted, len(report_files) - deleted
 
 
+# FUN-087
 def validate_log_rotation(config: Any) -> tuple[bool, str, str | None]:
-    """Validate that log rotation is configured by size."""
     max_log_size_mb = int(getattr(config, "max_log_size_mb", 50))
     log_dir = Path(getattr(config, "log_dir", "logs"))
     if max_log_size_mb < 1:
@@ -172,8 +170,8 @@ def validate_log_rotation(config: Any) -> tuple[bool, str, str | None]:
     return True, message, None
 
 
+# FUN-088
 def format_maintenance_result(result: MaintenanceResult) -> str:
-    """Format maintenance results for CLI output."""
     lines = [
         "Gleipnir maintenance",
         f"OK | events_deleted={result.events_deleted} retention_days={result.event_retention_days}",

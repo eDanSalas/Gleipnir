@@ -1,10 +1,9 @@
-"""Application entry point for Gleipnir IDS."""
 
 from src.cli import main as cli_main
 
 
+# FUN-083
 def main() -> int:
-    """Run the command line interface."""
     return cli_main()
 
 

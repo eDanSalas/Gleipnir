@@ -1,9 +1,3 @@
-"""Packet parsing, normalization, and live capture for Gleipnir IDS.
-
-Offline helpers process synthetic packets, Scapy-compatible packet objects, raw
-Ethernet frames, and classic PCAP files without opening network interfaces.
-Live capture is only started when ``start_live_capture`` is called explicitly.
-"""
 
 from __future__ import annotations
 
@@ -46,20 +40,19 @@ _LOGGER.addHandler(logging.NullHandler())
 
 
 class SnifferError(ValueError):
-    """Raised when offline packet data cannot be processed."""
+    pass
 
 
 class IgnoredPacketError(SnifferError):
-    """Raised when a packet is valid but outside the IDS live-capture scope."""
+    pass
 
 
 class UnsupportedPacketError(SnifferError):
-    """Raised when a packet uses a link-layer format not yet supported."""
+    pass
 
 
 @dataclass(frozen=True)
 class PacketEvent:
-    """Normalized packet metadata extracted by the offline sniffer."""
 
     timestamp: float
     mac_origen: str | None
@@ -79,7 +72,6 @@ ScapySniff = Callable[..., Any]
 
 @dataclass(frozen=True)
 class LiveCaptureResult:
-    """Summary of a completed live capture session."""
 
     packets_received: int
     raw_packets: int
@@ -96,7 +88,6 @@ class LiveCaptureResult:
 
 @dataclass(frozen=True)
 class LiveCaptureForeverResult:
-    """Summary accumulated by a supervised live capture session."""
 
     capture_cycles: int
     packets_received: int
@@ -112,8 +103,8 @@ class LiveCaptureForeverResult:
     errors: int
 
 
+# FUN-101
 def parse_packet(packet: Any, timestamp: float | None = None) -> PacketEvent:
-    """Parse a synthetic, Scapy-compatible, or raw Ethernet packet offline."""
     if isinstance(packet, Mapping):
         return _parse_synthetic_packet(packet)
 
@@ -123,8 +114,8 @@ def parse_packet(packet: Any, timestamp: float | None = None) -> PacketEvent:
     return _parse_scapy_packet(packet)
 
 
+# FUN-102
 def parse_pcap(file_path: str | Path) -> tuple[PacketEvent, ...]:
-    """Parse a classic PCAP file and return normalized packet events."""
     data = Path(file_path).read_bytes()
     byte_order, linktype, timestamp_resolution = _parse_pcap_global_header(data)
 
@@ -155,6 +146,7 @@ def parse_pcap(file_path: str | Path) -> tuple[PacketEvent, ...]:
     return tuple(events)
 
 
+# FUN-103
 def start_live_capture(
     interface: str,
     packet_count: int | None = None,
@@ -168,11 +160,6 @@ def start_live_capture(
     debug_output: Callable[[str], Any] | None = None,
     use_pcap: bool = False,
 ) -> LiveCaptureResult:
-    """Capture live packets with Scapy and process them defensively.
-
-    This function does not perform attacks, spoofing, evasion, or exploitation.
-    On Linux it may require root privileges or packet-capture capabilities.
-    """
     capture_interface = _validate_interface(interface)
     count = _validate_packet_count(packet_count)
     capture_timeout = _validate_timeout(timeout)
@@ -391,6 +378,7 @@ def start_live_capture(
     )
 
 
+# FUN-104
 def start_live_capture_forever(
     interface: str,
     packet_count: int | None = None,
@@ -411,7 +399,6 @@ def start_live_capture_forever(
     monotonic: Callable[[], float] = time.monotonic,
     logger: logging.Logger | None = None,
 ) -> LiveCaptureForeverResult:
-    """Run live capture in supervised cycles suitable for systemd 24/7 use."""
     _validate_interface(interface)
     _validate_packet_count(packet_count)
     _validate_timeout(timeout)
@@ -514,18 +501,18 @@ def start_live_capture_forever(
     return LiveCaptureForeverResult(**totals)
 
 
+# FUN-105
 def process_synthetic_packet(packet: Mapping[str, str]) -> PacketEvent:
-    """Validate and normalize a synthetic packet mapping."""
     return parse_packet(packet)
 
 
+# FUN-106
 def process_ethernet_frame(frame: bytes) -> PacketEvent:
-    """Extract packet metadata from a raw Ethernet frame."""
     return _parse_ethernet_frame(frame, timestamp=0.0)
 
 
+# FUN-107
 def process_pcap(file_path: str | Path) -> tuple[PacketEvent, ...]:
-    """Process a classic PCAP file and return extracted packet metadata."""
     return parse_pcap(file_path)
 
 

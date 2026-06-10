@@ -1,4 +1,3 @@
-"""Unit tests for IDS alert throttling policy."""
 
 from __future__ import annotations
 

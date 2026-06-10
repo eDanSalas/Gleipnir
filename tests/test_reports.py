@@ -1,4 +1,3 @@
-"""Unit tests for IDS report generation."""
 
 from __future__ import annotations
 

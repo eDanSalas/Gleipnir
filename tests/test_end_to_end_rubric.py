@@ -1,4 +1,3 @@
-"""End-to-end rubric verification for the simulated IDS flow."""
 
 from __future__ import annotations
 
@@ -22,7 +21,6 @@ ADMIN_EMAIL = "admin@example.org"
 
 
 def test_simulated_end_to_end_flow_covers_rubric_modules() -> None:
-    """Verify the four main rubric modules without real traffic, SMTP, or internet."""
     with TemporaryDirectory() as temp_dir:
         root = Path(temp_dir)
         _write_whitelist(root)

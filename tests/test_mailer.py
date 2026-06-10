@@ -1,4 +1,3 @@
-"""Unit tests for SMTP alert delivery."""
 
 from __future__ import annotations
 

@@ -1,4 +1,3 @@
-"""Unit tests for the central IDS runtime engine."""
 
 from __future__ import annotations
 

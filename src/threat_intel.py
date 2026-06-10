@@ -1,8 +1,3 @@
-"""Threat intelligence enrichment for external IP addresses.
-
-The module is defensive and fault tolerant: API failures, missing keys, rate
-limits, and Whois failures return structured results instead of stopping the IDS.
-"""
 
 from __future__ import annotations
 
@@ -44,7 +39,6 @@ WhoisRunner = Callable[..., subprocess.CompletedProcess[str]]
 
 @dataclass(frozen=True)
 class ThreatIntelResult:
-    """Normalized result from one threat intelligence source."""
 
     service: str
     ip: str
@@ -56,8 +50,8 @@ class ThreatIntelResult:
 
 
 class ThreatIntelCache:
-    """Small persistent JSON cache keyed by service and IP address."""
 
+    # FUN-130
     def __init__(
         self,
         cache_path: str | Path,
@@ -69,6 +63,7 @@ class ThreatIntelCache:
         self.ttl_seconds = ttl_seconds
         self._clock = clock
 
+    # FUN-131
     def get(self, service: str, ip: str) -> ThreatIntelResult | None:
         cache_data = self._load()
         entry = cache_data.get(self._key(service, ip))
@@ -85,6 +80,7 @@ class ThreatIntelCache:
 
         return ThreatIntelResult(**{**result_data, "cached": True})
 
+    # FUN-132
     def set(self, result: ThreatIntelResult) -> None:
         self.cache_path.parent.mkdir(parents=True, exist_ok=True)
         cache_data = self._load()
@@ -118,6 +114,7 @@ class ThreatIntelCache:
         return f"{service}:{ip}"
 
 
+# FUN-133
 def check_abuseipdb(
     ip: str,
     *,
@@ -125,7 +122,6 @@ def check_abuseipdb(
     cache: ThreatIntelCache | None = None,
     request_get: RequestGet | None = None,
 ) -> ThreatIntelResult:
-    """Check an external IP address against AbuseIPDB."""
     normalized_ip = _normalize_ip(ip)
     service = "abuseipdb"
     if not _is_external_ip(normalized_ip):
@@ -136,6 +132,7 @@ def check_abuseipdb(
         return cached
 
     runtime_config = _runtime_config(config)
+    # EXP-015
     if not runtime_config.abuseipdb_api_key:
         return _skipped(service, normalized_ip, "ABUSEIPDB_API_KEY is not configured")
 
@@ -163,6 +160,7 @@ def check_abuseipdb(
     return result
 
 
+# FUN-134
 def check_virustotal(
     ip: str,
     *,
@@ -170,7 +168,6 @@ def check_virustotal(
     cache: ThreatIntelCache | None = None,
     request_get: RequestGet | None = None,
 ) -> ThreatIntelResult:
-    """Check an external IP address against VirusTotal."""
     normalized_ip = _normalize_ip(ip)
     service = "virustotal"
     if not _is_external_ip(normalized_ip):
@@ -204,6 +201,7 @@ def check_virustotal(
     return result
 
 
+# FUN-135
 def check_whois(
     ip: str,
     *,
@@ -211,7 +209,6 @@ def check_whois(
     cache: ThreatIntelCache | None = None,
     whois_runner: WhoisRunner | None = None,
 ) -> ThreatIntelResult:
-    """Query Whois information for an external IP address."""
     normalized_ip = _normalize_ip(ip)
     service = "whois"
     if not _is_external_ip(normalized_ip):
@@ -287,13 +284,13 @@ def check_whois(
     return result
 
 
+# FUN-136
 def enrich_external_ip(
     ip: str,
     *,
     config: Config | None = None,
     cache: ThreatIntelCache | None = None,
 ) -> dict[str, ThreatIntelResult]:
-    """Run all configured enrichment sources for one external IP address."""
     normalized_ip = _normalize_ip(ip)
     results: dict[str, ThreatIntelResult] = {}
 
@@ -320,13 +317,13 @@ def enrich_external_ip(
     return results
 
 
+# FUN-137
 def enrich_blacklisted_ip_event(
     event: Any,
     *,
     config: Config | None = None,
     cache: ThreatIntelCache | None = None,
 ) -> Any:
-    """Return a BLACKLISTED_EXTERNAL_IP event enriched with reputation data."""
     results = enrich_external_ip(event.ip_destino, config=config, cache=cache)
     return replace(event, threat_intel_results=results)
 

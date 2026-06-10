@@ -1,4 +1,3 @@
-"""JSON and CSV report generation for Gleipnir IDS."""
 
 from __future__ import annotations
 
@@ -55,7 +54,6 @@ REDACTED = "[REDACTED]"
 
 @dataclass(frozen=True)
 class ReportData:
-    """In-memory IDS events used to build a report."""
 
     authorized_devices: Sequence[Any] = field(default_factory=tuple)
     unauthorized_devices: Sequence[Any] = field(default_factory=tuple)
@@ -69,7 +67,6 @@ class ReportData:
 
 @dataclass(frozen=True)
 class ReportFilters:
-    """Filters applied when loading persisted IDS events."""
 
     event_type: str | None = None
     since: float | None = None
@@ -80,8 +77,8 @@ class ReportFilters:
     since_label: str | None = None
     until_label: str | None = None
 
+    # FUN-091
     def as_query_kwargs(self) -> dict[str, Any]:
-        """Return keyword arguments accepted by storage queries."""
         return {
             "event_type": self.event_type,
             "since": self.since,
@@ -91,8 +88,8 @@ class ReportFilters:
             "severity": self.severity,
         }
 
+    # FUN-092
     def as_payload(self) -> dict[str, Any]:
-        """Return a JSON-safe description of applied filters."""
         payload = {
             "type": self.event_type,
             "since": self.since_label if self.since_label is not None else self.since,
@@ -106,12 +103,12 @@ class ReportFilters:
 
 @dataclass(frozen=True)
 class ReportPaths:
-    """Paths written by report generation."""
 
     json_path: Path | None
     csv_path: Path | None
 
 
+# FUN-093
 def generate_reports(
     report_data: ReportData,
     *,
@@ -122,7 +119,6 @@ def generate_reports(
     output_format: str = REPORT_FORMAT_BOTH,
     filters: ReportFilters | Mapping[str, Any] | None = None,
 ) -> ReportPaths:
-    """Generate JSON and CSV IDS reports."""
     selected_format = _normalize_report_format(output_format)
     report_dir = _resolve_report_dir(output_dir, config)
     report_dir.mkdir(parents=True, exist_ok=True)
@@ -156,13 +152,13 @@ def generate_reports(
     return ReportPaths(json_path=json_path, csv_path=csv_path)
 
 
+# FUN-094
 def build_report_payload(
     report_data: ReportData,
     *,
     generated_at: datetime | None = None,
     filters: ReportFilters | Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Build a redacted JSON-serializable report payload."""
     created_at = generated_at or datetime.now(timezone.utc)
     payload = {
         "generated_at": created_at.isoformat(),
@@ -193,8 +189,8 @@ def build_report_payload(
     return payload
 
 
+# FUN-095
 def summarize_report_data(report_data: ReportData) -> dict[str, int]:
-    """Return event counters for console summaries."""
     return {
         "authorized_devices": len(report_data.authorized_devices),
         "unauthorized_devices": len(report_data.unauthorized_devices),

@@ -1,4 +1,3 @@
-"""Blacklist loading and IP checks for dangerous external addresses."""
 
 from __future__ import annotations
 
@@ -19,26 +18,25 @@ _BLACKLISTED_ENTRIES: dict[str, "BlacklistEntry"] = {}
 
 
 class BlacklistError(ValueError):
-    """Raised when the blacklist file has invalid content."""
+    pass
 
 
 @dataclass(frozen=True)
 class BlacklistEntry:
-    """Single blacklisted IP with a normalized risk label."""
 
     ip: str
     reason: str = DEFAULT_RISK
 
 
+# FUN-008
 def load_blacklist(file_path: str | Path = DEFAULT_BLACKLIST_FILE) -> tuple[str, ...]:
-    """Load blacklisted IPv4/IPv6 addresses from a TXT file."""
     entries = list_blacklist_entries(file_path)
     _replace_blacklisted_entries(entries)
     return tuple(entry.ip for entry in entries)
 
 
+# FUN-009
 def list_blacklist_entries(file_path: str | Path = DEFAULT_BLACKLIST_FILE) -> tuple[BlacklistEntry, ...]:
-    """List blacklisted IPs and optional reasons from the TXT file."""
     path = Path(file_path)
     entries: list[BlacklistEntry] = []
     pending_reason = ""
@@ -60,13 +58,13 @@ def list_blacklist_entries(file_path: str | Path = DEFAULT_BLACKLIST_FILE) -> tu
     return tuple(entries)
 
 
+# FUN-010
 def add_blacklist_entry(
     file_path: str | Path,
     *,
     ip: str,
     reason: str,
 ) -> BlacklistEntry:
-    """Add an IP address to the blacklist TXT file."""
     path = Path(file_path)
     path.parent.mkdir(parents=True, exist_ok=True)
     normalized_ip = validate_ip(ip)
@@ -85,8 +83,8 @@ def add_blacklist_entry(
     return entry
 
 
+# FUN-011
 def remove_blacklist_entry(file_path: str | Path, *, ip: str) -> BlacklistEntry:
-    """Remove an IP address from the blacklist TXT file."""
     path = Path(file_path)
     normalized_ip = validate_ip(ip)
     entries = list_blacklist_entries(path)
@@ -100,8 +98,8 @@ def remove_blacklist_entry(file_path: str | Path, *, ip: str) -> BlacklistEntry:
     return removed
 
 
+# FUN-012
 def validate_blacklist_file(file_path: str | Path) -> tuple[BlacklistEntry, ...]:
-    """Validate a blacklist file and reject duplicate IP addresses."""
     entries = list_blacklist_entries(file_path)
     seen_ips: set[str] = set()
 
@@ -114,29 +112,29 @@ def validate_blacklist_file(file_path: str | Path) -> tuple[BlacklistEntry, ...]
     return entries
 
 
+# FUN-013
 def is_blacklisted(ip: str) -> bool:
-    """Return whether an IPv4/IPv6 address exists in the loaded blacklist."""
     normalized_ip = validate_ip(ip)
 
     return normalized_ip in _BLACKLISTED_IPS
 
 
+# FUN-014
 def get_blacklist_entry(ip: str) -> BlacklistEntry | None:
-    """Return blacklist metadata for an IP already loaded in memory."""
     normalized_ip = validate_ip(ip)
     return _BLACKLISTED_ENTRIES.get(normalized_ip)
 
 
+# FUN-015
 def validate_ip(value: str) -> str:
-    """Validate IPv4 or IPv6 input and return a canonical string."""
     try:
         return str(ipaddress.ip_address(value.strip()))
     except ValueError as exc:
         raise BlacklistError(f"Invalid IP address: {value}") from exc
 
 
+# FUN-016
 def normalize_risk(value: str | None) -> str:
-    """Return one supported risk label from free-text blacklist metadata."""
     if value is None:
         return DEFAULT_RISK
 

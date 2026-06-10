@@ -1,4 +1,3 @@
-"""Unit tests for device authorization detection."""
 
 from __future__ import annotations
 

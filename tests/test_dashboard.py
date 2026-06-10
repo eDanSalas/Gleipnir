@@ -1,4 +1,3 @@
-"""Unit tests for the Gleipnir Flask dashboard."""
 
 from __future__ import annotations
 
@@ -1248,7 +1247,6 @@ def test_dashboard_admin_ips_apply_without_permissions_shows_clear_error(tmp_pat
         dashboard_password="admin-password",
         dashboard_role="admin",
     )
-    # Make IPS effectively active with auto_apply so we reach the permission gate.
     from src.ips_config import save_ips_config
 
     save_ips_config(

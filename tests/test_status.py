@@ -1,4 +1,3 @@
-"""Unit tests for the Gleipnir healthcheck command."""
 
 from __future__ import annotations
 

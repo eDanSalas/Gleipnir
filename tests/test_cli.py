@@ -1,4 +1,3 @@
-"""Unit tests for the Gleipnir CLI."""
 
 from __future__ import annotations
 
@@ -1239,7 +1238,6 @@ class CliTests(unittest.TestCase):
             self.assertEqual(load_ips_config(config)["allowlist_policy"], "block_unregistered")
 
     def test_ips_policy_blacklist_rejects_invalid_mode(self) -> None:
-        # argparse choices reject the invalid value with SystemExit(2).
         with self.assertRaises(SystemExit) as ctx:
             cli.main(
                 ["ips", "policy", "blacklist", "--mode", "nuke"],
@@ -1285,7 +1283,6 @@ class CliTests(unittest.TestCase):
 
 
 def _ips_config(root: Path, **operational) -> SimpleNamespace:
-    """Write an operational ips_config.json and return a matching config namespace."""
     from src.ips_config import get_default_ips_config
 
     config = get_default_ips_config()

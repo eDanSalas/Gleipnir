@@ -1,19 +1,3 @@
-"""Optional defensive IPS/Firewall enforcement layer for Gleipnir.
-
-This module is fully optional. Gleipnir's default behaviour is a passive IDS:
-it detects, logs, and alerts but never blocks traffic. When the operator
-explicitly enables the IPS layer (``IPS_ENABLED=true``) this module can build
-and apply nftables rules in a dedicated, self-contained table/chain.
-
-Safety design:
-- Nothing is applied unless ``IPS_ENABLED=true`` and ``IPS_DRY_RUN=false``.
-- Only Gleipnir's own ``table inet <IPS_TABLE>`` is created or removed; existing
-  system rules are never flushed or modified.
-- ``nft flush ruleset`` is never used.
-- Missing ``nft`` binary, missing permissions, or backend errors are logged and
-  returned as structured results; they never stop the IDS.
-- No offensive, evasion, or spoofing behaviour. Intended for owned/lab networks.
-"""
 
 from __future__ import annotations
 
@@ -34,32 +18,26 @@ BACKEND_NFTABLES = "nftables"
 NFT_FAMILY = "inet"
 DEFAULT_NFT_TIMEOUT_SECONDS = 10
 
-# Allowlist policies.
 ALLOWLIST_MONITOR = "monitor"
 ALLOWLIST_ALLOW_REGISTERED = "allow_registered"
 ALLOWLIST_BLOCK_UNREGISTERED = "block_unregistered"
 
-# Blacklist policies.
 BLACKLIST_MONITOR = "monitor"
 BLACKLIST_BLOCK = "block"
 
-# Block directions.
 DIRECTION_OUTBOUND = "outbound"
 DIRECTION_INBOUND = "inbound"
 DIRECTION_BOTH = "both"
 
-# Actions recorded on events.
 ACTION_DETECTED = "detected"
 ACTION_ALERTED = "alerted"
 ACTION_BLOCKED = "blocked"
 ACTION_DRY_RUN_BLOCK = "dry_run_block"
 ACTION_MONITORED = "monitored"
 
-# IPS action event types persisted to SQLite/reports.
 IPS_BLOCKED_BLACKLISTED_IP = "IPS_BLOCKED_BLACKLISTED_IP"
 IPS_BLOCKED_UNREGISTERED_DEVICE = "IPS_BLOCKED_UNREGISTERED_DEVICE"
 
-# Set names live inside Gleipnir's own table only.
 SET_BLACKLIST_V4 = "gleipnir_blacklist_v4"
 SET_BLACKLIST_V6 = "gleipnir_blacklist_v6"
 SET_ALLOW_V4 = "gleipnir_allow_v4"
@@ -68,12 +46,11 @@ SET_ALLOW_MAC = "gleipnir_allow_mac"
 
 
 class FirewallError(RuntimeError):
-    """Raised only for programming errors; runtime failures return results."""
+    pass
 
 
 @dataclass(frozen=True)
 class IPSSettings:
-    """Validated IPS/firewall settings derived from configuration."""
 
     enabled: bool = False
     backend: str = BACKEND_NFTABLES
@@ -86,13 +63,9 @@ class IPSSettings:
     blacklist_check_private: bool = False
     auto_apply: bool = False
 
+    # FUN-056
     @classmethod
     def from_config(cls, config: Any) -> "IPSSettings":
-        """Build IPS settings from runtime configuration (base-only fallback).
-
-        Prefer ``ips_config.build_ips_settings`` which overlays the operational
-        JSON file. This classmethod is kept for direct/base use and tests.
-        """
         return cls(
             enabled=bool(getattr(config, "ips_enabled", False)),
             backend=str(getattr(config, "ips_backend", BACKEND_NFTABLES)),
@@ -106,15 +79,14 @@ class IPSSettings:
             auto_apply=bool(getattr(config, "ips_auto_apply", False)),
         )
 
+    # FUN-057
     @property
     def is_active(self) -> bool:
-        """Return True when rules may actually be applied to the system."""
         return self.enabled and not self.dry_run
 
 
 @dataclass(frozen=True)
 class FirewallResult:
-    """Structured outcome of a firewall operation; never raises to callers."""
 
     applied: bool
     dry_run: bool
@@ -125,7 +97,6 @@ class FirewallResult:
 
 @dataclass(frozen=True)
 class IPSActionEvent:
-    """Defensive action taken (or simulated) for one detection."""
 
     event_type: str
     timestamp: float
@@ -142,11 +113,8 @@ class IPSActionEvent:
     backend: str = BACKEND_NFTABLES
 
 
-# --------------------------------------------------------------------------- #
-# Backend availability / permissions
-# --------------------------------------------------------------------------- #
+# FUN-058
 def is_nft_available(runner: CommandRunner | None = None) -> bool:
-    """Return True when the ``nft`` binary is callable on this system."""
     run = runner or subprocess.run
     try:
         completed = run(
@@ -158,20 +126,15 @@ def is_nft_available(runner: CommandRunner | None = None) -> bool:
         )
     except FileNotFoundError:
         return False
-    except Exception as exc:  # pragma: no cover - defensive
+    except Exception as exc:
         _LOGGER.warning("nft availability check failed: %s", exc)
         return False
 
     return getattr(completed, "returncode", 1) == 0
 
 
+# FUN-059
 def has_required_permissions(runner: CommandRunner | None = None) -> bool:
-    """Best-effort check that we can read Gleipnir's own table (proxy for root).
-
-    Applying real nftables changes requires root/CAP_NET_ADMIN. We never assume
-    privileges; callers should run apply/remove with sudo. A non-zero result
-    here usually means the process lacks the necessary capabilities.
-    """
     run = runner or subprocess.run
     try:
         completed = run(
@@ -183,24 +146,17 @@ def has_required_permissions(runner: CommandRunner | None = None) -> bool:
         )
     except FileNotFoundError:
         return False
-    except Exception:  # pragma: no cover - defensive
+    except Exception:
         return False
 
     return getattr(completed, "returncode", 1) == 0
 
 
-# --------------------------------------------------------------------------- #
-# Rule generation (pure functions, safe to run without nft)
-# --------------------------------------------------------------------------- #
+# FUN-060
 def build_blacklist_rules(
     blacklist_entries: Iterable[Any],
     settings: IPSSettings,
 ) -> list[str]:
-    """Return nftables chain rule lines that drop blacklisted IPs.
-
-    Direction is controlled by ``settings.block_direction``. Returns an empty
-    list when the blacklist policy is ``monitor`` or there are no entries.
-    """
     if settings.blacklist_policy != BLACKLIST_BLOCK:
         return []
 
@@ -223,20 +179,11 @@ def build_blacklist_rules(
     return rules
 
 
+# FUN-061
 def build_allowlist_rules(
     whitelist_entries: Iterable[Any],
     settings: IPSSettings,
 ) -> list[str]:
-    """Return nftables chain rule lines for the allowlist policy.
-
-    - ``monitor``: no rules (passive).
-    - ``allow_registered``: explicitly accept registered source IPs.
-    - ``block_unregistered``: accept registered sources then drop the rest.
-
-    MAC matching (``ether saddr``) is only reliable on the same Ethernet
-    segment / bridged path. On routed (L3) traffic the source MAC is the last
-    hop, not the original host, so IP rules are preferred and authoritative.
-    """
     policy = settings.allowlist_policy
     if policy == ALLOWLIST_MONITOR:
         return []
@@ -255,12 +202,11 @@ def build_allowlist_rules(
             rules.append(f"ether saddr @{SET_ALLOW_MAC} accept")
 
     if policy == ALLOWLIST_BLOCK_UNREGISTERED:
-        # Guard: never emit a blanket drop when there is nothing to allow,
-        # which would otherwise blackhole the whole segment.
         if v4:
             rules.append(f"ip saddr != @{SET_ALLOW_V4} drop")
         if v6:
             rules.append(f"ip6 saddr != @{SET_ALLOW_V6} drop")
+        # EXP-003
         if not v4 and not v6:
             _LOGGER.warning(
                 "IPS block_unregistered requested but allowlist has no IPs; "
@@ -270,12 +216,12 @@ def build_allowlist_rules(
     return rules
 
 
+# FUN-062
 def build_ruleset(
     whitelist_entries: Iterable[Any],
     blacklist_entries: Iterable[Any],
     settings: IPSSettings,
 ) -> str:
-    """Render the full ``nft -f`` script for Gleipnir's own table only."""
     whitelist_entries = tuple(whitelist_entries)
     blacklist_entries = tuple(blacklist_entries)
 
@@ -321,12 +267,12 @@ def build_ruleset(
     return "\n".join(parts) + "\n"
 
 
+# FUN-063
 def dry_run_rules(
     whitelist_entries: Iterable[Any],
     blacklist_entries: Iterable[Any],
     settings: IPSSettings,
 ) -> FirewallResult:
-    """Return the rules that *would* be applied without touching the system."""
     script = build_ruleset(whitelist_entries, blacklist_entries, settings)
     rule_lines = tuple(line for line in script.splitlines())
     _LOGGER.info(
@@ -338,17 +284,15 @@ def dry_run_rules(
     return FirewallResult(applied=False, dry_run=True, reason="dry_run", rules=rule_lines)
 
 
-# --------------------------------------------------------------------------- #
-# Applying / removing rules (only ever touches Gleipnir's own table)
-# --------------------------------------------------------------------------- #
+# FUN-064
 def apply_rules(
     script: str,
     settings: IPSSettings,
     *,
     runner: CommandRunner | None = None,
 ) -> FirewallResult:
-    """Apply a Gleipnir nft script, but only when enforcement is truly active."""
     rule_lines = tuple(script.splitlines())
+    # EXP-001
     if not settings.enabled:
         return FirewallResult(
             applied=False,
@@ -409,12 +353,13 @@ def apply_rules(
     return FirewallResult(applied=True, dry_run=False, rules=rule_lines)
 
 
+# FUN-065
 def remove_gleipnir_rules(
     settings: IPSSettings,
     *,
     runner: CommandRunner | None = None,
 ) -> FirewallResult:
-    """Delete only Gleipnir's own table; never touches external rules."""
+    # EXP-002
     command = ["nft", "delete", "table", NFT_FAMILY, settings.table]
     rule_lines = (" ".join(command),)
 
@@ -448,7 +393,6 @@ def remove_gleipnir_rules(
     returncode = getattr(completed, "returncode", 1)
     if returncode != 0:
         stderr = (getattr(completed, "stderr", "") or "").strip().lower()
-        # A missing table is a benign no-op, not an error.
         if "no such file" in stderr or "does not exist" in stderr:
             return FirewallResult(
                 applied=False,
@@ -468,17 +412,13 @@ def remove_gleipnir_rules(
     return FirewallResult(applied=True, dry_run=settings.dry_run, rules=rule_lines)
 
 
+# FUN-066
 def block_ip(
     ip: str,
     settings: IPSSettings,
     *,
     runner: CommandRunner | None = None,
 ) -> FirewallResult:
-    """Add one IP to Gleipnir's own blacklist set (only when enforcement active).
-
-    Requires that ``sync_firewall_rules`` has already created the table/sets.
-    Never raises: backend problems are returned as a structured result.
-    """
     if not settings.enabled:
         return FirewallResult(applied=False, dry_run=settings.dry_run, reason="ips_disabled")
     if settings.dry_run:
@@ -523,6 +463,7 @@ def block_ip(
     return FirewallResult(applied=True, dry_run=False, rules=rule_lines)
 
 
+# FUN-067
 def sync_firewall_rules(
     whitelist_entries: Iterable[Any],
     blacklist_entries: Iterable[Any],
@@ -530,7 +471,6 @@ def sync_firewall_rules(
     *,
     runner: CommandRunner | None = None,
 ) -> FirewallResult:
-    """Build the ruleset and apply it (or report dry-run/disabled)."""
     script = build_ruleset(whitelist_entries, blacklist_entries, settings)
     if not settings.enabled:
         return FirewallResult(
@@ -545,9 +485,6 @@ def sync_firewall_rules(
     return apply_rules(script, settings, runner=runner)
 
 
-# --------------------------------------------------------------------------- #
-# Helpers
-# --------------------------------------------------------------------------- #
 def _entry_ips(entries: Iterable[Any]) -> list[str]:
     ips: list[str] = []
     for entry in entries:

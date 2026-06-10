@@ -1,4 +1,3 @@
-"""Unit tests for offline replay mode."""
 
 from __future__ import annotations
 

@@ -1,4 +1,3 @@
-"""SQLite persistence for IDS events."""
 
 from __future__ import annotations
 
@@ -79,12 +78,11 @@ CREATE_INDEXES_SQL = (
 
 
 class StorageError(RuntimeError):
-    """Raised when IDS event persistence fails."""
+    pass
 
 
 @dataclass(frozen=True)
 class StoredEvent:
-    """One event stored in the SQLite database."""
 
     id: int
     timestamp: float | None
@@ -99,9 +97,9 @@ class StoredEvent:
     message: str | None
     raw_json: str
 
+    # FUN-112
     @property
     def raw(self) -> dict[str, Any]:
-        """Return the sanitized JSON payload as a dictionary."""
         try:
             parsed = json.loads(self.raw_json)
         except json.JSONDecodeError:
@@ -111,21 +109,21 @@ class StoredEvent:
 
 
 class SQLiteEventStore:
-    """Persist normalized IDS events into a local SQLite database."""
 
+    # FUN-113
     def __init__(self, db_path: str | Path) -> None:
         self.db_path = Path(db_path).expanduser()
         self._connection: sqlite3.Connection | None = None
         self._initialized = False
 
+    # FUN-114
     @classmethod
     def from_config(cls, config: Any) -> "SQLiteEventStore":
-        """Build the event store from runtime configuration."""
         db_path = getattr(config, "ids_db_path", Path("data/gleipnir_events.db"))
         return cls(db_path)
 
+    # FUN-115
     def initialize(self) -> None:
-        """Create the events table and indexes when they do not exist."""
         connection = self._connect()
         connection.execute(CREATE_EVENTS_TABLE_SQL)
         for statement in CREATE_INDEXES_SQL:
@@ -133,6 +131,7 @@ class SQLiteEventStore:
         connection.commit()
         self._initialized = True
 
+    # FUN-116
     def save_event(
         self,
         *,
@@ -148,7 +147,6 @@ class SQLiteEventStore:
         message: str | None = None,
         raw: Any | None = None,
     ) -> int:
-        """Store one sanitized IDS event and return its database id."""
         self._ensure_initialized()
         raw_json = _safe_json(raw if raw is not None else {})
 
@@ -186,8 +184,8 @@ class SQLiteEventStore:
         self._connect().commit()
         return int(cursor.lastrowid)
 
+    # FUN-117
     def save_packet_processing_result(self, result: Any) -> tuple[int, ...]:
-        """Persist all events produced by one IDSEngine packet result."""
         stored_ids: list[int] = []
 
         detection_event = getattr(result, "detection_event", None)
@@ -221,8 +219,8 @@ class SQLiteEventStore:
 
         return tuple(stored_ids)
 
+    # FUN-118
     def save_ips_event(self, event: Any) -> int:
-        """Persist one IPS/firewall action event."""
         accion = getattr(event, "accion", None)
         applied = getattr(event, "applied", False)
         dry_run = getattr(event, "dry_run", False)
@@ -251,8 +249,8 @@ class SQLiteEventStore:
             },
         )
 
+    # FUN-119
     def save_detection_event(self, event: Any) -> int:
-        """Persist an AUTHORIZED_DEVICE or UNAUTHORIZED_DEVICE event."""
         packet = getattr(event, "packet")
         severity = (
             SEVERITY_LOW
@@ -272,8 +270,8 @@ class SQLiteEventStore:
             raw=event,
         )
 
+    # FUN-120
     def save_traffic_event(self, event: Any) -> int:
-        """Persist one DNS_EVENT or HTTP_EVENT."""
         if hasattr(event, "dominio_consultado"):
             event_type = DNS_EVENT
             domain = getattr(event, "dominio_consultado", None)
@@ -301,8 +299,8 @@ class SQLiteEventStore:
             raw=event,
         )
 
+    # FUN-121
     def save_blacklist_event(self, event: Any) -> int:
-        """Persist a BLACKLISTED_EXTERNAL_IP event."""
         return self.save_event(
             event_type=BLACKLISTED_EXTERNAL_IP,
             timestamp=getattr(event, "timestamp", None),
@@ -314,8 +312,8 @@ class SQLiteEventStore:
             raw=event,
         )
 
+    # FUN-122
     def save_threat_intel_result(self, result: Any) -> int:
-        """Persist one threat intelligence service result."""
         raw = _to_plain_data(result)
         status = _mapping_value(raw, "status")
         service = _mapping_value(raw, "service")
@@ -332,8 +330,8 @@ class SQLiteEventStore:
             raw=raw,
         )
 
+    # FUN-123
     def save_alert_sent_event(self, source_event: Any) -> int:
-        """Persist an ALERT_SENT event derived from a detector event."""
         fields = _alert_event_fields(source_event)
 
         return self.save_event(
@@ -349,8 +347,8 @@ class SQLiteEventStore:
             raw={"source_event": fields["raw"]},
         )
 
+    # FUN-124
     def save_alert_suppressed_event(self, source_event: Any) -> int:
-        """Persist an ALERT_SUPPRESSED event derived from a detector event."""
         fields = _alert_event_fields(source_event)
         reason = _mapping_value(fields["raw"], "alert_suppression_reason")
         message = f"Alert suppressed for {fields['source_event_type']}"
@@ -370,6 +368,7 @@ class SQLiteEventStore:
             raw={"source_event": fields["raw"], "reason": reason},
         )
 
+    # FUN-125
     def fetch_events(
         self,
         event_type: str | None = None,
@@ -383,7 +382,6 @@ class SQLiteEventStore:
         protocol: str | None = None,
         severity: str | None = None,
     ) -> tuple[StoredEvent, ...]:
-        """Fetch stored events, ordered by insertion id."""
         self._ensure_initialized()
         where_sql, parameters = _build_where_clause(
             event_type=event_type,
@@ -403,8 +401,8 @@ class SQLiteEventStore:
 
         return tuple(_stored_event_from_row(row) for row in rows.fetchall())
 
+    # FUN-126
     def get_event(self, event_id: int) -> StoredEvent | None:
-        """Fetch one stored event by id."""
         self._ensure_initialized()
         try:
             row = self._connect().execute(
@@ -416,8 +414,8 @@ class SQLiteEventStore:
 
         return _stored_event_from_row(row) if row is not None else None
 
+    # FUN-127
     def delete_events_older_than(self, cutoff_timestamp: float) -> int:
-        """Delete events with timestamps older than the cutoff and return count."""
         self._ensure_initialized()
         try:
             cursor = self._connect().execute(
@@ -430,12 +428,12 @@ class SQLiteEventStore:
 
         return int(cursor.rowcount if cursor.rowcount is not None else 0)
 
+    # FUN-128
     def build_report_data(
         self,
         filters: ReportFilters | None = None,
         **filter_kwargs: Any,
     ) -> ReportData:
-        """Build report input data from accumulated SQLite events."""
         authorized_devices: list[dict[str, Any]] = []
         unauthorized_devices: list[dict[str, Any]] = []
         dns_events: list[dict[str, Any]] = []
@@ -476,8 +474,8 @@ class SQLiteEventStore:
             ips_events=tuple(ips_events),
         )
 
+    # FUN-129
     def close(self) -> None:
-        """Close the SQLite connection."""
         if self._connection is None:
             return
 
